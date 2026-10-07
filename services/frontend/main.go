@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,10 +18,21 @@ import (
 var indexHTML []byte
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
+		runHealthcheck()
+		return
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	handler, err := newHandler(os.Getenv("API_URL"))
+	if err != nil {
+		logger.Error("frontend configuration is invalid", "error", err)
+		os.Exit(1)
+	}
+
 	server := &http.Server{
 		Addr:              ":8080",
-		Handler:           newHandler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -54,8 +67,26 @@ func main() {
 	}
 }
 
-func newHandler() http.Handler {
+func runHealthcheck() {
+	client := http.Client{Timeout: 2 * time.Second}
+	response, err := client.Get("http://localhost:8080/healthz")
+	if err != nil || response.StatusCode != http.StatusOK {
+		os.Exit(1)
+	}
+	_ = response.Body.Close()
+}
+
+func newHandler(apiURL string) (http.Handler, error) {
 	mux := http.NewServeMux()
+	if apiURL != "" {
+		target, err := url.Parse(apiURL)
+		if err != nil || target.Scheme == "" || target.Host == "" {
+			return nil, errors.New("API_URL must be an absolute URL")
+		}
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		mux.Handle("GET /api/", proxy)
+		mux.Handle("POST /api/", proxy)
+	}
 
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -81,7 +112,7 @@ func newHandler() http.Handler {
 		_, _ = response.Write(indexHTML)
 	})
 
-	return securityHeaders(mux)
+	return securityHeaders(mux), nil
 }
 
 func securityHeaders(next http.Handler) http.Handler {

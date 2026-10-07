@@ -1,0 +1,95 @@
+name: nexus
+
+services:
+  postgres:
+    image: postgres:17.11-alpine3.24
+    environment:
+      POSTGRES_DB: nexus
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus-local-password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8.1.10-alpine3.24
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  sqs:
+    image: softwaremill/elasticmq-native:1.7.1
+    volumes:
+      - ./local/elasticmq.conf:/opt/elasticmq.conf:ro
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_PASSWORD: nexus-local-password
+      VALKEY_HOST: valkey
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      SQS_ENDPOINT: http://sqs:9324
+      SQS_QUEUE_URL: http://sqs:9324/000000000000/nexus-dev-jobs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      sqs:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/api", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    environment:
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      SQS_ENDPOINT: http://sqs:9324
+      SQS_QUEUE_URL: http://sqs:9324/000000000000/nexus-dev-jobs
+      SQS_WAIT_TIME_SECONDS: 2
+    depends_on:
+      sqs:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/worker", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  frontend:
+    build:
+      context: .
+      dockerfile: services/frontend/Dockerfile
+    environment:
+      API_URL: http://api:8080
+    ports:
+      - "8081:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/frontend", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:

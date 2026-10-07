@@ -58,3 +58,28 @@ Build the worker container:
 ```bash
 make build-worker
 ```
+
+## Complete local environment
+
+Start PostgreSQL, Valkey, the local SQS-compatible queue, and all three Nexus
+services:
+
+```bash
+make local-up
+```
+
+Open <http://localhost:8081>. The frontend forwards `/api` requests to the API,
+so the browser uses one origin just as it will behind the Kubernetes Gateway.
+
+Inspect container status or follow logs:
+
+```bash
+make local-status
+make local-logs
+```
+
+Stop the environment without deleting the PostgreSQL development volume:
+
+```bash
+make local-down
+```

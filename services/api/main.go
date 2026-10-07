@@ -14,6 +14,11 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
+		runHealthcheck()
+		return
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	configuration, err := loadConfig()
 	if err != nil {
@@ -88,4 +93,13 @@ func main() {
 		logger.Error("api graceful shutdown failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func runHealthcheck() {
+	client := http.Client{Timeout: 2 * time.Second}
+	response, err := client.Get("http://localhost:8080/healthz")
+	if err != nil || response.StatusCode != http.StatusOK {
+		os.Exit(1)
+	}
+	_ = response.Body.Close()
 }
