@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nexus Platform</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, sans-serif;
+        background: #10131a;
+        color: #f4f7fb;
+      }
+
+      body {
+        display: grid;
+        min-height: 100vh;
+        margin: 0;
+        place-items: center;
+      }
+
+      main {
+        width: min(40rem, calc(100% - 3rem));
+        padding: 2rem;
+        border: 1px solid #2b3445;
+        border-radius: 1rem;
+        background: #171c26;
+      }
+
+      button {
+        padding: 0.75rem 1rem;
+        border: 0;
+        border-radius: 0.5rem;
+        background: #64d8cb;
+        color: #0b1716;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 700;
+      }
+
+      pre {
+        min-height: 4rem;
+        padding: 1rem;
+        overflow: auto;
+        border-radius: 0.5rem;
+        background: #0d1016;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p>Nexus</p>
+      <h1>Nexus Platform</h1>
+      <p>A small application used to exercise the platform.</p>
+      <button id="load-items" type="button">Load items</button>
+      <pre id="result" aria-live="polite">No request sent yet.</pre>
+    </main>
+    <script>
+      const button = document.querySelector("#load-items");
+      const result = document.querySelector("#result");
+
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        result.textContent = "Loading…";
+
+        try {
+          const response = await fetch("/api/items");
+          const body = await response.text();
+          result.textContent = response.ok ? body : `Request failed (${response.status}): ${body}`;
+        } catch (error) {
+          result.textContent = `API unavailable: ${error.message}`;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+.git
+.github
+.DS_Store
+.env
+bin
+coverage.out
