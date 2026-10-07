@@ -26,3 +26,23 @@ make run-frontend
 Open <http://localhost:8081>. Port 8081 is used on the host because Jenkins is
 already using port 8080. Inside Kubernetes, the service continues to listen on
 port 8080.
+
+## API
+
+The API provides:
+
+- `GET /healthz`
+- `GET /readyz`
+- `GET /api/items`
+- `POST /api/items`
+- `POST /api/notify`
+
+Items are stored in PostgreSQL and cached briefly in Valkey. Notifications are
+published to SQS for the worker. Runtime configuration is supplied through
+environment variables; credentials are never stored in this repository.
+
+Build the API container:
+
+```bash
+make build-api
+```
