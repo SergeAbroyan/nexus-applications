@@ -46,3 +46,15 @@ Build the API container:
 ```bash
 make build-api
 ```
+
+## Worker
+
+The worker long-polls SQS, validates each notification, logs the processed
+message, and deletes it only after successful processing. Failed messages stay
+in SQS for retry and eventually move to the dead-letter queue.
+
+Build the worker container:
+
+```bash
+make build-worker
+```
