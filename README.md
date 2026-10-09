@@ -83,3 +83,25 @@ Stop the environment without deleting the PostgreSQL development volume:
 ```bash
 make local-down
 ```
+
+## Continuous integration
+
+`.github/workflows/ci.yaml` runs for pull requests and pushes to `main`. It
+checks Go formatting, runs `go vet` and race-enabled tests, and builds the
+frontend, API, and worker containers. A successful `main` build publishes all
+three images to ECR with the full Git commit SHA as their immutable tag.
+
+Publishing uses GitHub OIDC, so the repository does not store AWS access keys.
+After applying the infrastructure, add these GitHub repository variables:
+
+- `AWS_ROLE_ARN`: the `application_ci_iam_role_arn` output from the
+  `ci-identity` Terragrunt unit;
+- `AWS_REGION`: the deployed AWS region, currently `us-east-1`.
+
+Until both variables exist, GitHub still runs all tests and container builds but
+skips the ECR publishing job. This lets the workflow operate before the AWS
+infrastructure is deployed.
+
+Publishing does not modify the GitOps repository. To promote a tested build,
+set `image.tag` in the target `nexus-gitops/environments/<environment>/values.yaml`
+file to the published commit SHA and merge that GitOps change.
