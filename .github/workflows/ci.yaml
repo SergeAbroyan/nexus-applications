@@ -55,10 +55,20 @@ jobs:
         with:
           context: .
           file: services/${{ matrix.service }}/Dockerfile
+          load: true
           push: false
           tags: nexus/${{ matrix.service }}:ci
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Scan container vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: nexus/${{ matrix.service }}:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
 
   publish:
     name: Publish ${{ matrix.service }}

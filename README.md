@@ -96,8 +96,10 @@ make local-down
 
 `.github/workflows/ci.yaml` runs for pull requests and pushes to `main`. It
 checks Go formatting, runs `go vet` and race-enabled tests, and builds the
-frontend, API, and worker containers. A successful `main` build publishes all
-three images to ECR with the full Git commit SHA as their immutable tag.
+frontend, API, and worker containers. Trivy scans each built image and blocks
+the pipeline when it finds a HIGH or CRITICAL vulnerability that has an
+available fix. A successful `main` build publishes all three images to ECR with
+the full Git commit SHA as their immutable tag.
 
 Publishing uses GitHub OIDC, so the repository does not store AWS access keys.
 After applying the infrastructure, add these GitHub repository variables:
