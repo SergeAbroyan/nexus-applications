@@ -6,6 +6,7 @@ WORKDIR /src
 
 COPY go.mod ./
 COPY services/frontend ./services/frontend
+COPY services/observability ./services/observability
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \

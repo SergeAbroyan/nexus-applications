@@ -12,6 +12,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/SergeAbroyan/nexus-applications/services/observability"
 )
 
 //go:embed index.html
@@ -77,6 +79,7 @@ func runHealthcheck() {
 }
 
 func newHandler(apiURL string) (http.Handler, error) {
+	metrics := observability.New("frontend")
 	mux := http.NewServeMux()
 	if apiURL != "" {
 		target, err := url.Parse(apiURL)
@@ -99,6 +102,7 @@ func newHandler(apiURL string) (http.Handler, error) {
 		response.WriteHeader(http.StatusOK)
 		_, _ = response.Write([]byte("ready\n"))
 	})
+	mux.Handle("GET /metrics", metrics.Handler())
 
 	mux.HandleFunc("GET /", func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/" {
@@ -112,7 +116,7 @@ func newHandler(apiURL string) (http.Handler, error) {
 		_, _ = response.Write(indexHTML)
 	})
 
-	return securityHeaders(mux), nil
+	return metrics.Middleware(securityHeaders(mux)), nil
 }
 
 func securityHeaders(next http.Handler) http.Handler {

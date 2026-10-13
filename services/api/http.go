@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/SergeAbroyan/nexus-applications/services/observability"
 )
 
 type itemStore interface {
@@ -36,13 +38,15 @@ type application struct {
 }
 
 func (app *application) handler() http.Handler {
+	metrics := observability.New("api")
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", app.health)
 	mux.HandleFunc("GET /readyz", app.ready)
 	mux.HandleFunc("GET /api/items", app.listItems)
 	mux.HandleFunc("POST /api/items", app.createItem)
 	mux.HandleFunc("POST /api/notify", app.publishNotification)
-	return mux
+	mux.Handle("GET /metrics", metrics.Handler())
+	return metrics.Middleware(mux)
 }
 
 func (app *application) health(response http.ResponseWriter, _ *http.Request) {

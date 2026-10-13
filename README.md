@@ -33,6 +33,7 @@ The API provides:
 
 - `GET /healthz`
 - `GET /readyz`
+- `GET /metrics`
 - `GET /api/items`
 - `POST /api/items`
 - `POST /api/notify`
@@ -58,6 +59,13 @@ Build the worker container:
 ```bash
 make build-worker
 ```
+
+## Metrics
+
+Every service exposes `GET /metrics` in Prometheus text format. The shared
+`services/observability` package records service identity, process uptime,
+total HTTP requests, and in-flight requests using only the Go standard library.
+Metrics scrapes are excluded from the request count.
 
 ## Complete local environment
 

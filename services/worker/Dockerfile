@@ -8,6 +8,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY services/worker ./services/worker
+COPY services/observability ./services/observability
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \

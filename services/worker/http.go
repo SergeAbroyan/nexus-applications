@@ -3,9 +3,12 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/SergeAbroyan/nexus-applications/services/observability"
 )
 
 func (worker *worker) handler() http.Handler {
+	metrics := observability.New("worker")
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, map[string]string{"status": "ok"})
@@ -17,7 +20,8 @@ func (worker *worker) handler() http.Handler {
 		}
 		writeJSON(response, http.StatusOK, map[string]string{"status": "ready"})
 	})
-	return mux
+	mux.Handle("GET /metrics", metrics.Handler())
+	return metrics.Middleware(mux)
 }
 
 func writeJSON(response http.ResponseWriter, status int, value any) {
