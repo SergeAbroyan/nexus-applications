@@ -108,9 +108,18 @@ After applying the infrastructure, add these GitHub repository variables:
   `ci-identity` Terragrunt unit;
 - `AWS_REGION`: the deployed AWS region, currently `us-east-1`.
 
-Until both variables exist, GitHub still runs all tests and container builds but
-skips the ECR publishing job. This lets the workflow operate before the AWS
-infrastructure is deployed.
+SonarQube analysis is enabled when both of these repository settings exist:
+
+- variable `SONAR_HOST_URL`: the HTTPS URL of the SonarQube server;
+- secret `SONAR_TOKEN`: a project analysis token created in SonarQube.
+
+The scanner uploads Go coverage and waits up to five minutes for the Quality
+Gate. A failed gate fails the quality job and prevents ECR publishing. Until
+both settings exist, only the external SonarQube steps are skipped.
+
+Until both AWS variables exist, GitHub still runs all tests and container
+builds but skips the ECR publishing job. This lets the workflow operate before
+the AWS infrastructure is deployed.
 
 Publishing does not modify the GitOps repository. To promote a tested build,
 set `image.tag` in the target `nexus-gitops/environments/<environment>/values.yaml`
