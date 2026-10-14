@@ -77,6 +77,12 @@ records written with a request or worker context include `trace_id` and
 parent-based ratio sampler honors upstream Istio decisions and applies the
 configured ratio to root spans such as worker polling cycles.
 
+The API also creates child spans for PostgreSQL, Valkey, and SQS operations.
+SQS messages carry standard W3C trace context in message attributes, allowing
+the worker's consumer span and contextual logs to continue the originating API
+trace. Trace attributes describe operations without recording SQL statements,
+cache values, notification bodies, credentials, or SQS receipt handles.
+
 Tracing stays disabled when the endpoint is unset, so the local Compose stack
 does not require an observability backend. Kubernetes supplies the internal
 collector endpoint through the Nexus Helm chart.

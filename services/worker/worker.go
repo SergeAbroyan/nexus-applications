@@ -10,7 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SergeAbroyan/nexus-applications/services/observability"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type notification struct {
@@ -46,35 +49,50 @@ func (worker *worker) Run(ctx context.Context) {
 }
 
 func (worker *worker) runOnce(ctx context.Context) error {
-	ctx, span := otel.Tracer("nexus-worker").Start(ctx, "sqs.poll-and-process")
-	defer span.End()
-
 	messages, err := worker.queue.Receive(ctx)
 	if err != nil {
 		return err
 	}
 
 	for _, message := range messages {
-		notification, err := parseNotification(message.Body)
-		if err != nil {
-			worker.logger.ErrorContext(ctx, "reject invalid notification", "error", err)
-			continue
-		}
-
-		worker.logger.InfoContext(
-			ctx,
-			"notification processed",
-			"type", notification.Type,
-			"message", notification.Message,
-			"createdAt", notification.CreatedAt,
-		)
-
-		if err := worker.queue.Delete(ctx, message.ReceiptHandle); err != nil {
-			worker.logger.ErrorContext(ctx, "delete processed notification", "error", err)
-		}
+		worker.processMessage(ctx, message)
 	}
 
 	return nil
+}
+
+func (worker *worker) processMessage(ctx context.Context, message queueMessage) {
+	ctx = observability.ExtractTraceContext(ctx, message.TraceContext)
+	ctx, span := otel.Tracer("nexus-worker").Start(
+		ctx,
+		"notification.process",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "aws_sqs"),
+			attribute.String("messaging.operation.name", "process"),
+		),
+	)
+	defer span.End()
+
+	notification, err := parseNotification(message.Body)
+	if err != nil {
+		observability.RecordSpanError(span, err)
+		worker.logger.ErrorContext(ctx, "reject invalid notification", "error", err)
+		return
+	}
+
+	worker.logger.InfoContext(
+		ctx,
+		"notification processed",
+		"type", notification.Type,
+		"message", notification.Message,
+		"createdAt", notification.CreatedAt,
+	)
+
+	if err := worker.queue.Delete(ctx, message.ReceiptHandle); err != nil {
+		observability.RecordSpanError(span, err)
+		worker.logger.ErrorContext(ctx, "delete processed notification", "error", err)
+	}
 }
 
 func parseNotification(body string) (notification, error) {

@@ -9,9 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SergeAbroyan/nexus-applications/services/observability"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const emptyBodySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -57,35 +61,70 @@ func (cache *valkeyCache) Close() error {
 }
 
 func (cache *valkeyCache) Ping(ctx context.Context) error {
-	return cache.client.Ping(ctx).Err()
+	ctx, span := valkeySpan(ctx, "PING")
+	defer span.End()
+
+	err := cache.client.Ping(ctx).Err()
+	observability.RecordSpanError(span, err)
+	return err
 }
 
 func (cache *valkeyCache) GetItems(ctx context.Context) ([]item, bool, error) {
+	ctx, span := valkeySpan(ctx, "GET")
+	defer span.End()
+
 	value, err := cache.client.Get(ctx, "nexus:items").Bytes()
 	if err == redis.Nil {
+		span.SetAttributes(attribute.Bool("cache.hit", false))
 		return nil, false, nil
 	}
 	if err != nil {
+		observability.RecordSpanError(span, err)
 		return nil, false, err
 	}
+	span.SetAttributes(attribute.Bool("cache.hit", true))
 
 	var items []item
 	if err := json.Unmarshal(value, &items); err != nil {
+		observability.RecordSpanError(span, err)
 		return nil, false, err
 	}
 	return items, true, nil
 }
 
 func (cache *valkeyCache) SetItems(ctx context.Context, items []item) error {
+	ctx, span := valkeySpan(ctx, "SET")
+	defer span.End()
+
 	value, err := json.Marshal(items)
 	if err != nil {
+		observability.RecordSpanError(span, err)
 		return err
 	}
-	return cache.client.Set(ctx, "nexus:items", value, cache.ttl).Err()
+	err = cache.client.Set(ctx, "nexus:items", value, cache.ttl).Err()
+	observability.RecordSpanError(span, err)
+	return err
 }
 
 func (cache *valkeyCache) DeleteItems(ctx context.Context) error {
-	return cache.client.Del(ctx, "nexus:items").Err()
+	ctx, span := valkeySpan(ctx, "DELETE")
+	defer span.End()
+
+	err := cache.client.Del(ctx, "nexus:items").Err()
+	observability.RecordSpanError(span, err)
+	return err
+}
+
+func valkeySpan(ctx context.Context, operation string) (context.Context, trace.Span) {
+	return otel.Tracer("nexus-api/valkey").Start(
+		ctx,
+		"valkey."+operation,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("db.system.name", "valkey"),
+			attribute.String("db.operation.name", operation),
+		),
+	)
 }
 
 type valkeyIAMCredentials struct {

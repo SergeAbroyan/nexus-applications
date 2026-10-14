@@ -10,6 +10,7 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -91,6 +92,24 @@ func TraceHTTPHandler(serviceName string, next http.Handler) http.Handler {
 
 func TraceHTTPTransport(transport http.RoundTripper) http.RoundTripper {
 	return otelhttp.NewTransport(transport)
+}
+
+func InjectTraceContext(ctx context.Context) map[string]string {
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	return carrier
+}
+
+func ExtractTraceContext(ctx context.Context, values map[string]string) context.Context {
+	return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(values))
+}
+
+func RecordSpanError(span trace.Span, err error) {
+	if err == nil {
+		return
+	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 }
 
 func NewLogger() *slog.Logger {
