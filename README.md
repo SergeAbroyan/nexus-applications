@@ -128,6 +128,11 @@ After applying the infrastructure, add these GitHub repository variables:
   `ci-identity` Terragrunt unit;
 - `AWS_REGION`: the deployed AWS region, currently `us-east-1`.
 
+Add the `GITOPS_TOKEN` repository secret to enable automatic DEV deployment.
+Use a fine-grained GitHub personal access token restricted to the
+`SergeAbroyan/nexus-gitops` repository with `Contents: Read and write`
+permission. It does not need access to AWS or any other repository.
+
 SonarQube analysis is enabled when both of these repository settings exist:
 
 - variable `SONAR_HOST_URL`: the HTTPS URL of the SonarQube server;
@@ -138,9 +143,12 @@ Gate. A failed gate fails the quality job and prevents ECR publishing. Until
 both settings exist, only the external SonarQube steps are skipped.
 
 Until both AWS variables exist, GitHub still runs all tests and container
-builds but skips the ECR publishing job. This lets the workflow operate before
-the AWS infrastructure is deployed.
+builds but skips the ECR publishing and DEV promotion jobs. After all three
+images are published successfully, one promotion job changes
+`nexus-gitops/environments/dev/values.yaml` to the same commit SHA. Argo CD then
+reconciles that immutable release. If `GITOPS_TOKEN` is absent, publishing still
+succeeds and the workflow records that promotion was skipped.
 
-Publishing does not modify the GitOps repository. To promote a tested build,
-set `image.tag` in the target `nexus-gitops/environments/<environment>/values.yaml`
-file to the published commit SHA and merge that GitOps change.
+Staging and production promotions remain deliberate GitOps changes. Promote
+the already-tested SHA by changing `image.tag` in the target environment values
+file; never rebuild an image for promotion.

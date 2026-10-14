@@ -142,4 +142,55 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
       - name: Record published image
-        run: echo '`${{ steps.ecr.outputs.registry }}/nexus/${{ matrix.service }}:${{ github.sha }}`' >> "$GITHUB_STEP_SUMMARY"
+        run: echo "\`${{ steps.ecr.outputs.registry }}/nexus/${{ matrix.service }}:${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  promote-dev:
+    name: Promote release to DEV
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.AWS_ROLE_ARN != '' &&
+      vars.AWS_REGION != ''
+    needs: publish
+    runs-on: ubuntu-latest
+    env:
+      GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+    steps:
+      - name: Record skipped promotion
+        if: env.GITOPS_TOKEN == ''
+        run: echo "DEV promotion skipped because GITOPS_TOKEN is not configured." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out GitOps repository
+        if: env.GITOPS_TOKEN != ''
+        uses: actions/checkout@v6
+        with:
+          repository: SergeAbroyan/nexus-gitops
+          ref: main
+          path: nexus-gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+
+      - name: Update DEV release tag
+        if: env.GITOPS_TOKEN != ''
+        working-directory: nexus-gitops
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          sed -i -E "s/^  tag: .*/  tag: \"${IMAGE_TAG}\"/" environments/dev/values.yaml
+          grep -Fx "  tag: \"${IMAGE_TAG}\"" environments/dev/values.yaml
+
+      - name: Commit and push DEV promotion
+        if: env.GITOPS_TOKEN != ''
+        working-directory: nexus-gitops
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          if git diff --quiet -- environments/dev/values.yaml; then
+            echo "DEV already uses ${IMAGE_TAG}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add environments/dev/values.yaml
+          git commit -m "deploy(dev): ${IMAGE_TAG}"
+          git push origin HEAD:main
+          echo "Promoted DEV to \`${IMAGE_TAG}\`." >> "$GITHUB_STEP_SUMMARY"
