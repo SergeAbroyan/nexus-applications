@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/SergeAbroyan/nexus-applications/services/observability"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
 
@@ -19,7 +19,7 @@ func main() {
 		return
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := observability.NewLogger()
 	configuration, err := loadConfig()
 	if err != nil {
 		logger.Error("load configuration", "error", err)
@@ -28,6 +28,18 @@ func main() {
 
 	startupContext, cancelStartup := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelStartup()
+	shutdownTracing, err := observability.SetupTracing(startupContext, "nexus-worker")
+	if err != nil {
+		logger.Error("initialize tracing", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownContext); err != nil {
+			logger.Error("flush traces", "error", err)
+		}
+	}()
 	awsConfiguration, err := awsconfig.LoadDefaultConfig(startupContext, awsconfig.WithRegion(configuration.AWSRegion))
 	if err != nil {
 		logger.Error("load AWS configuration", "error", err)

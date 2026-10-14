@@ -4,7 +4,6 @@ import (
 	"context"
 	_ "embed"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -25,7 +24,22 @@ func main() {
 		return
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := observability.NewLogger()
+	startupContext, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelStartup()
+	shutdownTracing, err := observability.SetupTracing(startupContext, "nexus-frontend")
+	if err != nil {
+		logger.Error("initialize tracing", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownContext); err != nil {
+			logger.Error("flush traces", "error", err)
+		}
+	}()
+
 	handler, err := newHandler(os.Getenv("API_URL"))
 	if err != nil {
 		logger.Error("frontend configuration is invalid", "error", err)
@@ -87,6 +101,7 @@ func newHandler(apiURL string) (http.Handler, error) {
 			return nil, errors.New("API_URL must be an absolute URL")
 		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
+		proxy.Transport = observability.TraceHTTPTransport(http.DefaultTransport)
 		mux.Handle("GET /api/", proxy)
 		mux.Handle("POST /api/", proxy)
 	}
@@ -116,7 +131,7 @@ func newHandler(apiURL string) (http.Handler, error) {
 		_, _ = response.Write(indexHTML)
 	})
 
-	return metrics.Middleware(securityHeaders(mux)), nil
+	return observability.TraceHTTPHandler("nexus-frontend", metrics.Middleware(securityHeaders(mux))), nil
 }
 
 func securityHeaders(next http.Handler) http.Handler {

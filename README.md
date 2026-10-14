@@ -67,6 +67,20 @@ Every service exposes `GET /metrics` in Prometheus text format. The shared
 total HTTP requests, and in-flight requests using only the Go standard library.
 Metrics scrapes are excluded from the request count.
 
+## Tracing
+
+Each service initializes OpenTelemetry when `OTEL_EXPORTER_OTLP_ENDPOINT` is
+set. Incoming HTTP requests create server spans, the frontend propagates trace
+context to the API, and the worker traces each SQS polling cycle. JSON log
+records written with a request or worker context include `trace_id` and
+`span_id`, allowing Grafana to correlate Tempo traces with Loki logs. A
+parent-based ratio sampler honors upstream Istio decisions and applies the
+configured ratio to root spans such as worker polling cycles.
+
+Tracing stays disabled when the endpoint is unset, so the local Compose stack
+does not require an observability backend. Kubernetes supplies the internal
+collector endpoint through the Nexus Helm chart.
+
 ## Complete local environment
 
 Start PostgreSQL, Valkey, the local SQS-compatible queue, and all three Nexus

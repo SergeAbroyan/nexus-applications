@@ -21,7 +21,7 @@ func (worker *worker) handler() http.Handler {
 		writeJSON(response, http.StatusOK, map[string]string{"status": "ready"})
 	})
 	mux.Handle("GET /metrics", metrics.Handler())
-	return metrics.Middleware(mux)
+	return observability.TraceHTTPHandler("nexus-worker", metrics.Middleware(mux))
 }
 
 func writeJSON(response http.ResponseWriter, status int, value any) {

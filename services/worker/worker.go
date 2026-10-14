@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel"
 )
 
 type notification struct {
@@ -33,7 +35,7 @@ func (worker *worker) Run(ctx context.Context) {
 				return
 			}
 
-			worker.logger.Warn("receive SQS messages", "error", err)
+			worker.logger.WarnContext(ctx, "receive SQS messages", "error", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -44,6 +46,9 @@ func (worker *worker) Run(ctx context.Context) {
 }
 
 func (worker *worker) runOnce(ctx context.Context) error {
+	ctx, span := otel.Tracer("nexus-worker").Start(ctx, "sqs.poll-and-process")
+	defer span.End()
+
 	messages, err := worker.queue.Receive(ctx)
 	if err != nil {
 		return err
@@ -52,11 +57,12 @@ func (worker *worker) runOnce(ctx context.Context) error {
 	for _, message := range messages {
 		notification, err := parseNotification(message.Body)
 		if err != nil {
-			worker.logger.Error("reject invalid notification", "error", err)
+			worker.logger.ErrorContext(ctx, "reject invalid notification", "error", err)
 			continue
 		}
 
-		worker.logger.Info(
+		worker.logger.InfoContext(
+			ctx,
 			"notification processed",
 			"type", notification.Type,
 			"message", notification.Message,
@@ -64,7 +70,7 @@ func (worker *worker) runOnce(ctx context.Context) error {
 		)
 
 		if err := worker.queue.Delete(ctx, message.ReceiptHandle); err != nil {
-			worker.logger.Error("delete processed notification", "error", err)
+			worker.logger.ErrorContext(ctx, "delete processed notification", "error", err)
 		}
 	}
 

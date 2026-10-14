@@ -46,7 +46,7 @@ func (app *application) handler() http.Handler {
 	mux.HandleFunc("POST /api/items", app.createItem)
 	mux.HandleFunc("POST /api/notify", app.publishNotification)
 	mux.Handle("GET /metrics", metrics.Handler())
-	return metrics.Middleware(mux)
+	return observability.TraceHTTPHandler("nexus-api", metrics.Middleware(mux))
 }
 
 func (app *application) health(response http.ResponseWriter, _ *http.Request) {
@@ -76,18 +76,18 @@ func (app *application) listItems(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if err != nil {
-		app.logger.Warn("read item cache", "error", err)
+		app.logger.WarnContext(request.Context(), "read item cache", "error", err)
 	}
 
 	items, err = app.store.ListItems(request.Context())
 	if err != nil {
-		app.logger.Error("list items", "error", err)
+		app.logger.ErrorContext(request.Context(), "list items", "error", err)
 		writeError(response, http.StatusInternalServerError, "could not list items")
 		return
 	}
 
 	if err := app.cache.SetItems(request.Context(), items); err != nil {
-		app.logger.Warn("write item cache", "error", err)
+		app.logger.WarnContext(request.Context(), "write item cache", "error", err)
 	}
 
 	writeJSON(response, http.StatusOK, map[string]any{"items": items, "source": "database"})
@@ -110,13 +110,13 @@ func (app *application) createItem(response http.ResponseWriter, request *http.R
 
 	created, err := app.store.CreateItem(request.Context(), input.Name)
 	if err != nil {
-		app.logger.Error("create item", "error", err)
+		app.logger.ErrorContext(request.Context(), "create item", "error", err)
 		writeError(response, http.StatusInternalServerError, "could not create item")
 		return
 	}
 
 	if err := app.cache.DeleteItems(request.Context()); err != nil {
-		app.logger.Warn("invalidate item cache", "error", err)
+		app.logger.WarnContext(request.Context(), "invalidate item cache", "error", err)
 	}
 
 	writeJSON(response, http.StatusCreated, created)
@@ -138,7 +138,7 @@ func (app *application) publishNotification(response http.ResponseWriter, reques
 	}
 
 	if err := app.queue.Publish(request.Context(), input.Message); err != nil {
-		app.logger.Error("publish notification", "error", err)
+		app.logger.ErrorContext(request.Context(), "publish notification", "error", err)
 		writeError(response, http.StatusBadGateway, "could not publish notification")
 		return
 	}
