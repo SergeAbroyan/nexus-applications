@@ -9,6 +9,27 @@ This repository contains the three intentionally small Nexus services:
 The application stays small because its purpose is to exercise the surrounding
 AWS, Kubernetes, GitOps, security, scaling, and observability platform.
 
+## Repository structure
+
+```text
+.
+├── .github/workflows/ci.yaml  # Tests, scans, ECR publishing, DEV promotion
+├── local/elasticmq.conf       # Local SQS queues and dead-letter queue
+├── services/
+│   ├── frontend/              # Web server and API reverse proxy
+│   ├── api/                   # HTTP API, PostgreSQL, Valkey, and SQS clients
+│   ├── worker/                # SQS notification consumer
+│   └── observability/         # Shared metrics, tracing, and structured logging
+├── compose.yaml               # Complete local environment
+├── go.mod / go.sum            # Go module definition and locked dependencies
+├── Makefile                   # Short, repeatable local commands
+└── sonar-project.properties   # Optional SonarQube analysis configuration
+```
+
+The root `.gitignore` controls files Git must not track. `.dockerignore` has a
+different job: it keeps local and Git metadata out of Docker build contexts.
+Both are intentionally retained.
+
 ## Frontend
 
 Run the tests in the pinned Go container:
@@ -114,12 +135,14 @@ make local-down
 
 ## Continuous integration
 
-`.github/workflows/ci.yaml` runs for pull requests and pushes to `main`. It
-checks Go formatting, runs `go vet` and race-enabled tests, and builds the
-frontend, API, and worker containers. Trivy scans each built image and blocks
-the pipeline when it finds a HIGH or CRITICAL vulnerability that has an
-available fix. A successful `main` build publishes all three images to ECR with
-the full Git commit SHA as their immutable tag.
+`.github/workflows/ci.yaml` runs for pull requests, pushes to `main`, and manual
+runs. It checks Go formatting and module consistency, runs `go vet`, and runs
+race-enabled tests with coverage. Every container is scanned by Trivy, and the
+pipeline stops when it finds a HIGH or CRITICAL vulnerability that has an
+available fix. For a release, the exact scanned image is pushed to ECR with the
+full Git commit SHA as its immutable tag; the workflow never rebuilds an image
+between scanning and publishing. Pushes to `main` release automatically; a
+manual run releases only when it is started from `main`.
 
 Publishing uses GitHub OIDC, so the repository does not store AWS access keys.
 After applying the infrastructure, add these GitHub repository variables:
@@ -142,13 +165,16 @@ The scanner uploads Go coverage and waits up to five minutes for the Quality
 Gate. A failed gate fails the quality job and prevents ECR publishing. Until
 both settings exist, only the external SonarQube steps are skipped.
 
-Until both AWS variables exist, GitHub still runs all tests and container
-builds but skips the ECR publishing and DEV promotion jobs. After all three
-images are published successfully, one promotion job changes
-`nexus-gitops/environments/dev/values.yaml` to the same commit SHA. Argo CD then
-reconciles that immutable release. If `GITOPS_TOKEN` is absent, publishing still
-succeeds and the workflow records that promotion was skipped.
+Until both AWS variables exist, GitHub still runs all tests, container builds,
+and vulnerability scans but skips ECR publishing and DEV promotion. With the
+variables configured, a `main` run builds each image once, scans that image,
+and pushes it to ECR. Safe workflow reruns reuse an existing immutable SHA tag.
+After all three images are available, one promotion job changes the frontend,
+API, and worker files under `nexus-gitops/environments/dev/` to the same commit
+SHA. Argo CD then reconciles those immutable component releases. If
+`GITOPS_TOKEN` is absent, publishing still succeeds and the workflow records
+that promotion was skipped.
 
 Staging and production promotions remain deliberate GitOps changes. Promote
-the already-tested SHA by changing `image.tag` in the target environment values
-file; never rebuild an image for promotion.
+the already-tested SHA by changing `image.tag` in the target component values
+files; never rebuild an image for promotion.

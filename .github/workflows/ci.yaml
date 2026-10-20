@@ -1,10 +1,11 @@
-name: Application CI
+name: Application CI and ECR Release
 
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: application-ci-${{ github.ref }}
@@ -13,16 +14,21 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  ECR_NAMESPACE: nexus
+  GITOPS_REPOSITORY: SergeAbroyan/nexus-gitops
+
 jobs:
   quality:
     name: Test and code quality
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -38,11 +44,11 @@ jobs:
       - name: Vet packages
         run: go vet ./...
 
-      - name: Run tests
-        run: go test -race ./...
+      - name: Verify module files
+        run: go mod tidy -diff
 
-      - name: Measure test coverage
-        run: go test -coverprofile=coverage.out ./...
+      - name: Run tests with race detection and coverage
+        run: go test -race -coverprofile=coverage.out ./...
 
       - name: Analyze with SonarQube
         if: env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != ''
@@ -55,15 +61,21 @@ jobs:
           pollingTimeoutSec: 300
 
   containers:
-    name: Build ${{ matrix.service }}
+    name: Validate ${{ matrix.service }} image
+    if: >-
+      github.event_name == 'pull_request' ||
+      vars.AWS_ROLE_ARN == '' ||
+      vars.AWS_REGION == ''
+    needs: quality
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         service: [frontend, api, worker]
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Configure Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -75,14 +87,19 @@ jobs:
           file: services/${{ matrix.service }}/Dockerfile
           load: true
           push: false
-          tags: nexus/${{ matrix.service }}:ci
+          platforms: linux/amd64
+          tags: ${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=nexus-${{ matrix.service }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
       - name: Scan container vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: nexus/${{ matrix.service }}:ci
+          image-ref: ${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
@@ -91,12 +108,13 @@ jobs:
   publish:
     name: Publish ${{ matrix.service }}
     if: >-
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
       vars.AWS_ROLE_ARN != '' &&
       vars.AWS_REGION != ''
-    needs: [quality, containers]
+    needs: quality
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -106,7 +124,7 @@ jobs:
         service: [frontend, api, worker]
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
@@ -123,36 +141,72 @@ jobs:
 
       - name: Check whether image already exists
         id: image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          REPOSITORY: ${{ env.ECR_NAMESPACE }}/${{ matrix.service }}
         run: |
-          if aws ecr describe-images --repository-name "nexus/${{ matrix.service }}" --image-ids "imageTag=${{ github.sha }}" >/dev/null 2>&1; then
+          if aws ecr describe-images --repository-name "${REPOSITORY}" --image-ids "imageTag=${IMAGE_TAG}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and publish image
+      - name: Build release image
         if: steps.image.outputs.exists == 'false'
         uses: docker/build-push-action@v7.2.0
         with:
           context: .
           file: services/${{ matrix.service }}/Dockerfile
-          push: true
-          tags: ${{ steps.ecr.outputs.registry }}/nexus/${{ matrix.service }}:${{ github.sha }}
+          load: true
+          push: false
+          platforms: linux/amd64
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=nexus-${{ matrix.service }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-      - name: Record published image
-        run: echo "\`${{ steps.ecr.outputs.registry }}/nexus/${{ matrix.service }}:${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Scan release image
+        if: steps.image.outputs.exists == 'false'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Push verified image to ECR
+        if: steps.image.outputs.exists == 'false'
+        env:
+          IMAGE_URI: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
+        run: docker push "${IMAGE_URI}"
+
+      - name: Record ECR image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_URI: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
+          REPOSITORY: ${{ env.ECR_NAMESPACE }}/${{ matrix.service }}
+        run: |
+          IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name "${REPOSITORY}" \
+            --image-ids "imageTag=${IMAGE_TAG}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+          echo "\`${IMAGE_URI}@${IMAGE_DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
 
   promote-dev:
     name: Promote release to DEV
     if: >-
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
       vars.AWS_ROLE_ARN != '' &&
       vars.AWS_REGION != ''
     needs: publish
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
     steps:
@@ -162,9 +216,9 @@ jobs:
 
       - name: Check out GitOps repository
         if: env.GITOPS_TOKEN != ''
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          repository: SergeAbroyan/nexus-gitops
+          repository: ${{ env.GITOPS_REPOSITORY }}
           ref: main
           path: nexus-gitops
           token: ${{ secrets.GITOPS_TOKEN }}
@@ -175,8 +229,13 @@ jobs:
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          sed -i -E "s/^  tag: .*/  tag: \"${IMAGE_TAG}\"/" environments/dev/values.yaml
-          grep -Fx "  tag: \"${IMAGE_TAG}\"" environments/dev/values.yaml
+          for values_file in \
+            environments/dev/frontend-values.yaml \
+            environments/dev/api-values.yaml \
+            environments/dev/worker-values.yaml; do
+            sed -i -E "s/^  tag: .*/  tag: \"${IMAGE_TAG}\"/" "${values_file}"
+            grep -Fx "  tag: \"${IMAGE_TAG}\"" "${values_file}"
+          done
 
       - name: Commit and push DEV promotion
         if: env.GITOPS_TOKEN != ''
@@ -184,13 +243,18 @@ jobs:
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          if git diff --quiet -- environments/dev/values.yaml; then
+          DEV_VALUE_FILES=(
+            environments/dev/frontend-values.yaml
+            environments/dev/api-values.yaml
+            environments/dev/worker-values.yaml
+          )
+          if git diff --quiet -- "${DEV_VALUE_FILES[@]}"; then
             echo "DEV already uses ${IMAGE_TAG}." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add environments/dev/values.yaml
+          git add "${DEV_VALUE_FILES[@]}"
           git commit -m "deploy(dev): ${IMAGE_TAG}"
           git push origin HEAD:main
           echo "Promoted DEV to \`${IMAGE_TAG}\`." >> "$GITHUB_STEP_SUMMARY"
