@@ -19,8 +19,90 @@ env:
   GITOPS_REPOSITORY: SergeAbroyan/nexus-gitops
 
 jobs:
+  changes:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      api: ${{ steps.services.outputs.api }}
+      worker: ${{ steps.services.outputs.worker }}
+      any: ${{ steps.services.outputs.any }}
+      matrix: ${{ steps.services.outputs.matrix }}
+    steps:
+      - name: Check out source history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Select affected services
+        id: services
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          api=false
+          worker=false
+          changed_files="${RUNNER_TEMP}/changed-files.txt"
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            api=true
+            worker=true
+          elif [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${changed_files}"
+          elif [[ "${BEFORE_SHA}" =~ ^0+$ ]]; then
+            git show --pretty='' --name-only HEAD > "${changed_files}"
+          else
+            git diff --name-only "${BEFORE_SHA}" HEAD > "${changed_files}"
+          fi
+
+          if [[ -f "${changed_files}" ]]; then
+            while IFS= read -r path; do
+              case "${path}" in
+                services/api/*|services/observability/*|go.mod|go.sum)
+                  api=true
+                  ;;
+                services/worker/*)
+                  worker=true
+                  ;;
+                .dockerignore|Makefile|compose.yaml|sonar-project.properties|.github/workflows/ci.yaml)
+                  api=true
+                  worker=true
+                  ;;
+              esac
+            done < "${changed_files}"
+          fi
+
+          if [[ "${api}" == "true" && "${worker}" == "true" ]]; then
+            matrix='["api","worker"]'
+          elif [[ "${api}" == "true" ]]; then
+            matrix='["api"]'
+          elif [[ "${worker}" == "true" ]]; then
+            matrix='["worker"]'
+          else
+            matrix='[]'
+          fi
+
+          any=true
+          if [[ "${matrix}" == '[]' ]]; then
+            any=false
+          fi
+
+          {
+            echo "api=${api}"
+            echo "worker=${worker}"
+            echo "any=${any}"
+            echo "matrix=${matrix}"
+          } >> "${GITHUB_OUTPUT}"
+
   quality:
-    name: Test and code quality
+    name: Test changed services
+    if: needs.changes.outputs.any == 'true'
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -33,24 +115,42 @@ jobs:
           fetch-depth: 0
 
       - name: Install Go
+        if: >-
+          needs.changes.outputs.api == 'true' ||
+          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
       - name: Verify formatting
+        if: >-
+          needs.changes.outputs.api == 'true' ||
+          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
         run: test -z "$(gofmt -l .)"
 
       - name: Vet packages
+        if: >-
+          needs.changes.outputs.api == 'true' ||
+          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
         run: go vet ./...
 
       - name: Verify module files
+        if: >-
+          needs.changes.outputs.api == 'true' ||
+          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
         run: go mod tidy -diff
 
       - name: Run tests with race detection and coverage
+        if: >-
+          needs.changes.outputs.api == 'true' ||
+          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
         run: go test -race -coverprofile=coverage.out ./...
 
       - name: Install Java
+        if: >-
+          needs.changes.outputs.worker == 'true' ||
+          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
         uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -59,6 +159,9 @@ jobs:
           cache-dependency-path: services/worker/pom.xml
 
       - name: Test Java worker
+        if: >-
+          needs.changes.outputs.worker == 'true' ||
+          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
         run: mvn -B -f services/worker/pom.xml verify
 
       - name: Analyze with SonarQube
@@ -74,16 +177,17 @@ jobs:
   containers:
     name: Validate ${{ matrix.service }} image
     if: >-
-      github.event_name == 'pull_request' ||
+      needs.changes.outputs.any == 'true' &&
+      (github.event_name == 'pull_request' ||
       vars.AWS_ROLE_ARN == '' ||
-      vars.AWS_REGION == ''
-    needs: quality
+      vars.AWS_REGION == '')
+    needs: [changes, quality]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        service: [api, worker]
+        service: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -119,11 +223,12 @@ jobs:
   publish:
     name: Publish ${{ matrix.service }}
     if: >-
+      needs.changes.outputs.any == 'true' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
       vars.AWS_ROLE_ARN != '' &&
       vars.AWS_REGION != ''
-    needs: quality
+    needs: [changes, quality]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -132,7 +237,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, worker]
+        service: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -211,11 +316,12 @@ jobs:
   promote-dev:
     name: Promote release to DEV
     if: >-
+      needs.changes.outputs.any == 'true' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
       vars.AWS_ROLE_ARN != '' &&
       vars.AWS_REGION != ''
-    needs: publish
+    needs: [changes, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -239,10 +345,18 @@ jobs:
         working-directory: nexus-gitops
         env:
           IMAGE_TAG: ${{ github.sha }}
+          API_CHANGED: ${{ needs.changes.outputs.api }}
+          WORKER_CHANGED: ${{ needs.changes.outputs.worker }}
         run: |
-          for values_file in \
-            environments/dev/api-values.yaml \
-            environments/dev/worker-values.yaml; do
+          DEV_VALUE_FILES=()
+          if [[ "${API_CHANGED}" == "true" ]]; then
+            DEV_VALUE_FILES+=(environments/dev/api-values.yaml)
+          fi
+          if [[ "${WORKER_CHANGED}" == "true" ]]; then
+            DEV_VALUE_FILES+=(environments/dev/worker-values.yaml)
+          fi
+
+          for values_file in "${DEV_VALUE_FILES[@]}"; do
             sed -i -E "s/^  tag: .*/  tag: \"${IMAGE_TAG}\"/" "${values_file}"
             grep -Fx "  tag: \"${IMAGE_TAG}\"" "${values_file}"
           done
@@ -252,11 +366,17 @@ jobs:
         working-directory: nexus-gitops
         env:
           IMAGE_TAG: ${{ github.sha }}
+          API_CHANGED: ${{ needs.changes.outputs.api }}
+          WORKER_CHANGED: ${{ needs.changes.outputs.worker }}
         run: |
-          DEV_VALUE_FILES=(
-            environments/dev/api-values.yaml
-            environments/dev/worker-values.yaml
-          )
+          DEV_VALUE_FILES=()
+          if [[ "${API_CHANGED}" == "true" ]]; then
+            DEV_VALUE_FILES+=(environments/dev/api-values.yaml)
+          fi
+          if [[ "${WORKER_CHANGED}" == "true" ]]; then
+            DEV_VALUE_FILES+=(environments/dev/worker-values.yaml)
+          fi
+
           if git diff --quiet -- "${DEV_VALUE_FILES[@]}"; then
             echo "DEV already uses ${IMAGE_TAG}." >> "$GITHUB_STEP_SUMMARY"
             exit 0

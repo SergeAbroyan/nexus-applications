@@ -119,14 +119,15 @@ credentials for ElasticMQ. EKS uses Pod Identity.
 
 `.github/workflows/ci.yaml` performs these steps:
 
-1. format, vet and test the Go application;
-2. compile and test the Java application with Maven;
-3. optionally analyze both languages with SonarQube;
-4. build the `api` and `worker` images;
-5. scan the exact images with Trivy;
-6. authenticate to AWS through GitHub OIDC;
-7. push immutable commit-SHA tags to ECR;
-8. update the two DEV image tags in `nexus-gitops`.
+1. detect whether the API, worker or a shared build file changed;
+2. test the affected service, while a configured SonarQube scan analyzes both languages;
+3. build and scan only the affected `api` or `worker` image;
+4. authenticate to AWS through GitHub OIDC;
+5. push an immutable commit-SHA tag to ECR;
+6. update only the affected DEV image tag in `nexus-gitops`.
+
+Manual workflow runs intentionally select both services. Changes to shared
+container, Compose, analysis or workflow files also validate both services.
 
 After the infrastructure exists, configure these repository settings:
 
@@ -135,6 +136,6 @@ After the infrastructure exists, configure these repository settings:
 - secret `GITOPS_TOKEN`, restricted to write access on `nexus-gitops`;
 - optional variable `SONAR_HOST_URL` and secret `SONAR_TOKEN`.
 
-If AWS settings are absent, CI still tests, builds and scans both images but does
-not publish them. Staging and production promotion remains a deliberate GitOps
-change of the already-tested image SHA.
+If AWS settings are absent, CI still tests, builds and scans the affected images
+but does not publish them. Staging and production promotion remains a deliberate
+GitOps change of an already-tested image SHA.
