@@ -50,6 +50,17 @@ jobs:
       - name: Run tests with race detection and coverage
         run: go test -race -coverprofile=coverage.out ./...
 
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: services/worker/pom.xml
+
+      - name: Test Java worker
+        run: mvn -B -f services/worker/pom.xml verify
+
       - name: Analyze with SonarQube
         if: env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != ''
         uses: SonarSource/sonarqube-scan-action@v8.3.0
@@ -72,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [frontend, api, worker]
+        service: [api, worker]
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -121,7 +132,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [frontend, api, worker]
+        service: [api, worker]
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -230,7 +241,6 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           for values_file in \
-            environments/dev/frontend-values.yaml \
             environments/dev/api-values.yaml \
             environments/dev/worker-values.yaml; do
             sed -i -E "s/^  tag: .*/  tag: \"${IMAGE_TAG}\"/" "${values_file}"
@@ -244,7 +254,6 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           DEV_VALUE_FILES=(
-            environments/dev/frontend-values.yaml
             environments/dev/api-values.yaml
             environments/dev/worker-values.yaml
           )

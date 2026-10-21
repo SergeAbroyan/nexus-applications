@@ -97,6 +97,54 @@ func TestCreateAndListItems(t *testing.T) {
 	}
 }
 
+func TestIndex(t *testing.T) {
+	app, _, _ := testApplication()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+
+	app.handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "Nexus Platform") {
+		t.Fatal("expected the Nexus page title")
+	}
+	if response.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("expected security headers")
+	}
+}
+
+func TestJavaScriptAsset(t *testing.T) {
+	app, _, _ := testApplication()
+	request := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	response := httptest.NewRecorder()
+
+	app.handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", response.Code)
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/javascript; charset=utf-8" {
+		t.Fatalf("unexpected content type %q", contentType)
+	}
+	if !strings.Contains(response.Body.String(), "fetch(\"/api/items\")") {
+		t.Fatal("expected embedded application JavaScript")
+	}
+}
+
+func TestUnknownPath(t *testing.T) {
+	app, _, _ := testApplication()
+	request := httptest.NewRequest(http.MethodGet, "/missing", nil)
+	response := httptest.NewRecorder()
+
+	app.handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, response.Code)
+	}
+}
+
 func TestRejectsInvalidItem(t *testing.T) {
 	app, _, _ := testApplication()
 	request := httptest.NewRequest(http.MethodPost, "/api/items", strings.NewReader(`{"name":""}`))

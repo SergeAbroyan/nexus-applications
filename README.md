@@ -1,180 +1,140 @@
 # Nexus Applications
 
-This repository contains the three intentionally small Nexus services:
+This repository contains two intentionally small deployable applications:
 
-- `frontend`: serves the web page and calls the API.
-- `api`: will use PostgreSQL, Valkey, and SQS.
-- `worker`: will consume jobs from SQS.
+- `api` is a Go web application that serves the browser page and REST API,
+  stores items in PostgreSQL, caches reads in Valkey and publishes SQS jobs.
+- `worker` is a Java 21 Spring Boot application that long-polls SQS and processes
+  notification jobs.
 
-The application stays small because its purpose is to exercise the surrounding
-AWS, Kubernetes, GitOps, security, scaling, and observability platform.
+Two services are enough to demonstrate HTTP traffic, persistence, caching,
+asynchronous work, separate container builds and a polyglot CI/CD pipeline.
 
-## Repository structure
+## Structure
 
 ```text
 .
-├── .github/workflows/ci.yaml  # Tests, scans, ECR publishing, DEV promotion
-├── local/elasticmq.conf       # Local SQS queues and dead-letter queue
+├── .github/workflows/ci.yaml       Tests, scans, ECR publishing and DEV promotion
+├── local/elasticmq.conf            Local SQS queues and dead-letter queue
 ├── services/
-│   ├── frontend/              # Web server and API reverse proxy
-│   ├── api/                   # HTTP API, PostgreSQL, Valkey, and SQS clients
-│   ├── worker/                # SQS notification consumer
-│   └── observability/         # Shared metrics, tracing, and structured logging
-├── compose.yaml               # Complete local environment
-├── go.mod / go.sum            # Go module definition and locked dependencies
-├── Makefile                   # Short, repeatable local commands
-└── sonar-project.properties   # Optional SonarQube analysis configuration
+│   ├── api/                        Go web page and API
+│   ├── observability/              Go metrics, tracing and structured logging
+│   └── worker/
+│       ├── src/main/java/          Java SQS worker
+│       ├── src/main/resources/     Spring Boot configuration
+│       ├── src/test/java/          Java unit tests
+│       ├── pom.xml                 Java dependencies and build
+│       └── Dockerfile              Maven build and distroless runtime
+├── compose.yaml                    Complete local environment
+├── go.mod / go.sum                 Go dependencies
+├── Makefile                        Local commands
+└── sonar-project.properties        Optional Go and Java analysis
 ```
 
-The root `.gitignore` controls files Git must not track. `.dockerignore` has a
-different job: it keeps local and Git metadata out of Docker build contexts.
-Both are intentionally retained.
+## Go API
 
-## Frontend
+The API exposes:
 
-Run the tests in the pinned Go container:
+- `GET /` for the browser page;
+- `GET /healthz` and `GET /readyz` for Kubernetes probes;
+- `GET /metrics` for Prometheus;
+- `GET /api/items` and `POST /api/items` for PostgreSQL-backed items;
+- `POST /api/notify` for SQS notifications.
+
+The API is compiled as a static binary and runs as UID `65532` in a scratch
+container. The HTML page is embedded into that binary, so it does not require a
+separate frontend deployment.
+
+## Java Worker
+
+The Java worker uses Spring Boot, AWS SDK for Java v2 and Java 21. It long-polls
+SQS, validates the JSON notification and deletes a message only after successful
+processing. Invalid or failed messages remain available for retry and eventually
+move to the dead-letter queue.
+
+Spring Boot Actuator exposes:
+
+- `GET /livez` for the liveness probe;
+- `GET /readyz` for the readiness probe;
+- `GET /metrics` in Prometheus format.
+
+The worker is built with Maven and runs as a non-root user in a Java 21
+distroless container.
+
+## Local Development
+
+Run both test suites in pinned containers:
 
 ```bash
 make test
 ```
 
-Build and run the minimal frontend container:
+Build both application images:
 
 ```bash
-make run-frontend
+make build
 ```
 
-Open <http://localhost:8081>. Port 8081 is used on the host because Jenkins is
-already using port 8080. Inside Kubernetes, the service continues to listen on
-port 8080.
-
-## API
-
-The API provides:
-
-- `GET /healthz`
-- `GET /readyz`
-- `GET /metrics`
-- `GET /api/items`
-- `POST /api/items`
-- `POST /api/notify`
-
-Items are stored in PostgreSQL and cached briefly in Valkey. Notifications are
-published to SQS for the worker. Runtime configuration is supplied through
-environment variables; credentials are never stored in this repository.
-
-Build the API container:
-
-```bash
-make build-api
-```
-
-## Worker
-
-The worker long-polls SQS, validates each notification, logs the processed
-message, and deletes it only after successful processing. Failed messages stay
-in SQS for retry and eventually move to the dead-letter queue.
-
-Build the worker container:
-
-```bash
-make build-worker
-```
-
-## Metrics
-
-Every service exposes `GET /metrics` in Prometheus text format. The shared
-`services/observability` package records service identity, process uptime,
-total HTTP requests, and in-flight requests using only the Go standard library.
-Metrics scrapes are excluded from the request count.
-
-## Tracing
-
-Each service initializes OpenTelemetry when `OTEL_EXPORTER_OTLP_ENDPOINT` is
-set. Incoming HTTP requests create server spans, the frontend propagates trace
-context to the API, and the worker traces each SQS polling cycle. JSON log
-records written with a request or worker context include `trace_id` and
-`span_id`, allowing Grafana to correlate Tempo traces with Loki logs. A
-parent-based ratio sampler honors upstream Istio decisions and applies the
-configured ratio to root spans such as worker polling cycles.
-
-The API also creates child spans for PostgreSQL, Valkey, and SQS operations.
-SQS messages carry standard W3C trace context in message attributes, allowing
-the worker's consumer span and contextual logs to continue the originating API
-trace. Trace attributes describe operations without recording SQL statements,
-cache values, notification bodies, credentials, or SQS receipt handles.
-
-Tracing stays disabled when the endpoint is unset, so the local Compose stack
-does not require an observability backend. Kubernetes supplies the internal
-collector endpoint through the Nexus Helm chart.
-
-## Complete local environment
-
-Start PostgreSQL, Valkey, the local SQS-compatible queue, and all three Nexus
-services:
+Start PostgreSQL, Valkey, ElasticMQ, the Go API and the Java worker:
 
 ```bash
 make local-up
 ```
 
-Open <http://localhost:8081>. The frontend forwards `/api` requests to the API,
-so the browser uses one origin just as it will behind the Kubernetes Gateway.
+Open <http://localhost:8081>. Port `8081` avoids the Jenkins service already
+using port `8080` on the host.
 
-Inspect container status or follow logs:
+Inspect or stop the environment:
 
 ```bash
 make local-status
 make local-logs
-```
-
-Stop the environment without deleting the PostgreSQL development volume:
-
-```bash
 make local-down
 ```
 
-## Continuous integration
+`local-down` keeps the PostgreSQL development volume. Use Docker Compose's
+explicit volume-removal option only when you intentionally want to delete local
+data.
 
-`.github/workflows/ci.yaml` runs for pull requests, pushes to `main`, and manual
-runs. It checks Go formatting and module consistency, runs `go vet`, and runs
-race-enabled tests with coverage. Every container is scanned by Trivy, and the
-pipeline stops when it finds a HIGH or CRITICAL vulnerability that has an
-available fix. For a release, the exact scanned image is pushed to ECR with the
-full Git commit SHA as its immutable tag; the workflow never rebuilds an image
-between scanning and publishing. Pushes to `main` release automatically; a
-manual run releases only when it is started from `main`.
+## Configuration
 
-Publishing uses GitHub OIDC, so the repository does not store AWS access keys.
-After applying the infrastructure, add these GitHub repository variables:
+The Go API uses the following groups of variables:
 
-- `AWS_ROLE_ARN`: the `application_ci_iam_role_arn` output from the
-  `ci-identity` Terragrunt unit;
-- `AWS_REGION`: the deployed AWS region, currently `us-east-1`.
+- `DB_*` for PostgreSQL;
+- `VALKEY_*` for cache access;
+- `AWS_REGION`, `SQS_QUEUE_URL` and optional `SQS_ENDPOINT` for SQS;
+- `OTEL_*` for tracing.
 
-Add the `GITOPS_TOKEN` repository secret to enable automatic DEV deployment.
-Use a fine-grained GitHub personal access token restricted to the
-`SergeAbroyan/nexus-gitops` repository with `Contents: Read and write`
-permission. It does not need access to AWS or any other repository.
+The Java worker uses:
 
-SonarQube analysis is enabled when both of these repository settings exist:
+- `AWS_REGION`;
+- `SQS_QUEUE_URL`;
+- optional `SQS_ENDPOINT` for ElasticMQ;
+- `SQS_WAIT_TIME_SECONDS` and `SQS_VISIBILITY_TIMEOUT_SECONDS`.
 
-- variable `SONAR_HOST_URL`: the HTTPS URL of the SonarQube server;
-- secret `SONAR_TOKEN`: a project analysis token created in SonarQube.
+AWS credentials are not stored in the repository. Local Compose supplies test
+credentials for ElasticMQ. EKS uses Pod Identity.
 
-The scanner uploads Go coverage and waits up to five minutes for the Quality
-Gate. A failed gate fails the quality job and prevents ECR publishing. Until
-both settings exist, only the external SonarQube steps are skipped.
+## CI and Image Deployment
 
-Until both AWS variables exist, GitHub still runs all tests, container builds,
-and vulnerability scans but skips ECR publishing and DEV promotion. With the
-variables configured, a `main` run builds each image once, scans that image,
-and pushes it to ECR. Safe workflow reruns reuse an existing immutable SHA tag.
-After all three images are available, one promotion job changes the frontend,
-API, and worker files under `nexus-gitops/environments/dev/` to the same commit
-SHA. Argo CD then reconciles those immutable component releases. If
-`GITOPS_TOKEN` is absent, publishing still succeeds and the workflow records
-that promotion was skipped.
+`.github/workflows/ci.yaml` performs these steps:
 
-Staging and production promotions remain deliberate GitOps changes. Promote
-the already-tested SHA by changing `image.tag` in the target component values
-files; never rebuild an image for promotion.
+1. format, vet and test the Go application;
+2. compile and test the Java application with Maven;
+3. optionally analyze both languages with SonarQube;
+4. build the `api` and `worker` images;
+5. scan the exact images with Trivy;
+6. authenticate to AWS through GitHub OIDC;
+7. push immutable commit-SHA tags to ECR;
+8. update the two DEV image tags in `nexus-gitops`.
+
+After the infrastructure exists, configure these repository settings:
+
+- variable `AWS_ROLE_ARN` from the infrastructure `ci-identity` output;
+- variable `AWS_REGION`, currently `us-east-1`;
+- secret `GITOPS_TOKEN`, restricted to write access on `nexus-gitops`;
+- optional variable `SONAR_HOST_URL` and secret `SONAR_TOKEN`.
+
+If AWS settings are absent, CI still tests, builds and scans both images but does
+not publish them. Staging and production promotion remains a deliberate GitOps
+change of the already-tested image SHA.

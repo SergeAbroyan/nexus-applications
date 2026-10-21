@@ -41,6 +41,8 @@ services:
       AWS_SECRET_ACCESS_KEY: local
       SQS_ENDPOINT: http://sqs:9324
       SQS_QUEUE_URL: http://sqs:9324/000000000000/nexus-dev-jobs
+    ports:
+      - "8081:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,28 +70,6 @@ services:
     depends_on:
       sqs:
         condition: service_started
-    healthcheck:
-      test: ["CMD", "/worker", "healthcheck"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  frontend:
-    build:
-      context: .
-      dockerfile: services/frontend/Dockerfile
-    environment:
-      API_URL: http://api:8080
-    ports:
-      - "8081:8080"
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "/frontend", "healthcheck"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
 
 volumes:
   postgres-data:

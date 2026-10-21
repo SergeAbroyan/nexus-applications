@@ -1,27 +1,22 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.27.1-alpine AS build
+FROM maven:3.9.12-eclipse-temurin-21-alpine AS build
 
 WORKDIR /src
 
-COPY go.mod go.sum ./
-RUN go mod download
+COPY services/worker/pom.xml ./pom.xml
+COPY services/worker/src ./src
+RUN --mount=type=cache,target=/root/.m2 mvn -B verify
 
-COPY services/worker ./services/worker
-COPY services/observability ./services/observability
+FROM gcr.io/distroless/java21-debian13:nonroot
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -trimpath \
-    -ldflags="-s -w" \
-    -o /out/worker \
-    ./services/worker
+WORKDIR /app
 
-FROM scratch
+COPY --from=build --chown=65532:65532 /src/target/nexus-worker.jar /app/worker.jar
 
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=build --chown=65532:65532 /out/worker /worker
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError"
 
 USER 65532:65532
 EXPOSE 8080
 
-ENTRYPOINT ["/worker"]
+CMD ["/app/worker.jar"]

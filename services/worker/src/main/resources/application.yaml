@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: nexus-worker
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      base-path: /
+      exposure:
+        include: health,prometheus
+      path-mapping:
+        prometheus: metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+        add-additional-paths: true
+      show-details: never
+  metrics:
+    tags:
+      service: nexus-worker
+
+nexus:
+  worker:
+    queue-url: ${SQS_QUEUE_URL}
+    endpoint: ${SQS_ENDPOINT:}
+    wait-time-seconds: ${SQS_WAIT_TIME_SECONDS:20}
+    visibility-timeout-seconds: ${SQS_VISIBILITY_TIMEOUT_SECONDS:60}
+    poll-delay-ms: ${SQS_POLL_DELAY_MS:1000}

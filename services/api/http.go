@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +13,12 @@ import (
 
 	"github.com/SergeAbroyan/nexus-applications/services/observability"
 )
+
+//go:embed index.html
+var indexHTML []byte
+
+//go:embed app.js
+var appJavaScript []byte
 
 type itemStore interface {
 	Ping(context.Context) error
@@ -40,13 +47,39 @@ type application struct {
 func (app *application) handler() http.Handler {
 	metrics := observability.New("api")
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", app.index)
+	mux.HandleFunc("GET /app.js", app.javaScript)
 	mux.HandleFunc("GET /healthz", app.health)
 	mux.HandleFunc("GET /readyz", app.ready)
 	mux.HandleFunc("GET /api/items", app.listItems)
 	mux.HandleFunc("POST /api/items", app.createItem)
 	mux.HandleFunc("POST /api/notify", app.publishNotification)
 	mux.Handle("GET /metrics", metrics.Handler())
-	return observability.TraceHTTPHandler("nexus-api", metrics.Middleware(mux))
+	return observability.TraceHTTPHandler("nexus-api", metrics.Middleware(securityHeaders(mux)))
+}
+
+func (app *application) javaScript(response http.ResponseWriter, _ *http.Request) {
+	response.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	_, _ = response.Write(appJavaScript)
+}
+
+func (app *application) index(response http.ResponseWriter, request *http.Request) {
+	if request.URL.Path != "/" {
+		http.NotFound(response, request)
+		return
+	}
+	response.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = response.Write(indexHTML)
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		response.Header().Set("Referrer-Policy", "no-referrer")
+		response.Header().Set("X-Content-Type-Options", "nosniff")
+		response.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(response, request)
+	})
 }
 
 func (app *application) health(response http.ResponseWriter, _ *http.Request) {
