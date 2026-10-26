@@ -119,7 +119,9 @@ credentials for ElasticMQ. EKS uses Pod Identity.
 
 `.github/workflows/ci.yaml` performs these steps:
 
-1. detect whether the API, worker or a shared build file changed;
+1. select each service whose files differ from the commit that DEV runs, read
+   from `nexus-gitops` when `GITOPS_TOKEN` is set, or from the previous commit
+   otherwise;
 2. test the affected service, while a configured SonarQube scan analyzes both languages;
 3. build and scan only the affected `api` or `worker` image;
 4. authenticate to AWS through GitHub OIDC;
@@ -128,6 +130,12 @@ credentials for ElasticMQ. EKS uses Pod Identity.
 
 Manual workflow runs intentionally select both services. Changes to shared
 container, Compose, analysis or workflow files also validate both services.
+
+Runs on `main` queue instead of cancelling each other. Because every run
+compares with what DEV runs, a superseded or failed run never drops a change,
+and while DEV still uses the initial `0.1.0` tags the first run builds both
+services. Actions are pinned to commit SHAs, and Dependabot opens grouped
+weekly updates for them.
 
 After the infrastructure exists, configure these repository settings:
 

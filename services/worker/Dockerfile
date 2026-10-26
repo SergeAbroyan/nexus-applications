@@ -14,7 +14,7 @@ WORKDIR /app
 
 COPY --from=build --chown=65532:65532 /src/target/nexus-worker.jar /app/worker.jar
 
-ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError"
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=60.0 -XX:+ExitOnOutOfMemoryError"
 
 USER 65532:65532
 EXPOSE 8080
