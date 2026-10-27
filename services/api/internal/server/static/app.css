@@ -1,0 +1,63 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, sans-serif;
+  background: #10131a;
+  color: #f4f7fb;
+}
+
+body {
+  display: grid;
+  min-height: 100vh;
+  margin: 0;
+  place-items: center;
+}
+
+main {
+  width: min(42rem, calc(100% - 3rem));
+  padding: 2rem;
+  border: 1px solid #2b3445;
+  border-radius: 1rem;
+  background: #171c26;
+}
+
+form {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+input,
+button {
+  padding: 0.75rem 1rem;
+  border: 1px solid #3d485d;
+  border-radius: 0.5rem;
+  font: inherit;
+}
+
+input {
+  flex: 1;
+  background: #0d1016;
+  color: inherit;
+}
+
+button {
+  border: 0;
+  background: #64d8cb;
+  color: #0b1716;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+pre {
+  min-height: 5rem;
+  padding: 1rem;
+  overflow: auto;
+  border-radius: 0.5rem;
+  background: #0d1016;
+  white-space: pre-wrap;
+}

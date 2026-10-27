@@ -3,115 +3,144 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/SergeAbroyan/nexus-applications/services/observability"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+
+	"github.com/SergeAbroyan/nexus-applications/services/api/internal/config"
+	"github.com/SergeAbroyan/nexus-applications/services/api/internal/items"
+	"github.com/SergeAbroyan/nexus-applications/services/api/internal/notifications"
+	"github.com/SergeAbroyan/nexus-applications/services/api/internal/postgres"
+	"github.com/SergeAbroyan/nexus-applications/services/api/internal/server"
+	"github.com/SergeAbroyan/nexus-applications/services/api/internal/sqs"
+	"github.com/SergeAbroyan/nexus-applications/services/api/internal/telemetry"
+	"github.com/SergeAbroyan/nexus-applications/services/api/internal/valkey"
 )
+
+const serviceName = "nexus-api"
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
-		runHealthcheck()
+		if err := healthcheck(); err != nil {
+			os.Exit(1)
+		}
 		return
 	}
 
-	logger := observability.NewLogger()
-	configuration, err := loadConfig()
-	if err != nil {
-		logger.Error("load configuration", "error", err)
+	logger := telemetry.NewLogger()
+	if err := run(logger); err != nil {
+		logger.Error("api stopped", "error", err)
 		os.Exit(1)
+	}
+}
+
+func run(logger *slog.Logger) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load configuration: %w", err)
 	}
 
-	startupContext, cancelStartup := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	startup, cancelStartup := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelStartup()
-	shutdownTracing, err := observability.SetupTracing(startupContext, "nexus-api")
+
+	shutdownTracing, err := telemetry.SetupTracing(startup, serviceName)
 	if err != nil {
-		logger.Error("initialize tracing", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("set up tracing: %w", err)
 	}
 	defer func() {
-		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := shutdownTracing(shutdownContext); err != nil {
-			logger.Error("flush traces", "error", err)
+		if err := shutdownTracing(flush); err != nil {
+			logger.Warn("flush traces", "error", err)
 		}
 	}()
 
-	store, err := newPostgresStore(startupContext, configuration.DatabaseURL)
+	awsConfig, err := awsconfig.LoadDefaultConfig(startup)
 	if err != nil {
-		logger.Error("connect to PostgreSQL", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("load AWS configuration: %w", err)
+	}
+	if awsConfig.Region == "" {
+		return errors.New("AWS_REGION is required")
+	}
+
+	store, err := postgres.Open(startup, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("connect to PostgreSQL: %w", err)
 	}
 	defer store.Close()
 
-	awsConfiguration, err := awsconfig.LoadDefaultConfig(startupContext, awsconfig.WithRegion(configuration.AWSRegion))
+	cache, err := valkey.Connect(startup, cfg.Valkey, awsConfig)
 	if err != nil {
-		logger.Error("load AWS configuration", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("connect to Valkey: %w", err)
 	}
-
-	cache := newValkeyCache(configuration, awsConfiguration.Credentials)
 	defer func() {
 		if err := cache.Close(); err != nil {
 			logger.Warn("close Valkey connection", "error", err)
 		}
 	}()
-	if err := cache.Ping(startupContext); err != nil {
-		logger.Error("connect to Valkey", "error", err)
-		os.Exit(1)
-	}
 
-	app := &application{
-		logger: logger,
-		store:  store,
-		cache:  cache,
-		queue:  newJobQueue(configuration, awsConfiguration),
-	}
-	server := &http.Server{
-		Addr:              configuration.Address,
-		Handler:           app.handler(),
+	handler := server.New(server.Dependencies{
+		Logger:        logger,
+		Metrics:       telemetry.NewMetrics("api"),
+		Items:         items.NewService(store, cache, cfg.Valkey.CacheTTL, logger),
+		Notifications: notifications.NewService(sqs.NewQueue(awsConfig, cfg.QueueURL)),
+		Readiness:     []server.Check{{Name: "database", Ping: store.Ping}},
+	})
+
+	return serve(ctx, logger, &http.Server{
+		Addr:              cfg.Address,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       60 * time.Second,
-	}
+	})
+}
 
-	shutdownSignal, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	serverErrors := make(chan error, 1)
+func serve(ctx context.Context, logger *slog.Logger, httpServer *http.Server) error {
+	listenErrors := make(chan error, 1)
 	go func() {
-		logger.Info("api started", "address", server.Addr)
-		serverErrors <- server.ListenAndServe()
+		logger.Info("api listening", "address", httpServer.Addr)
+		listenErrors <- httpServer.ListenAndServe()
 	}()
 
 	select {
-	case err := <-serverErrors:
-		if !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("api stopped unexpectedly", "error", err)
-			os.Exit(1)
-		}
-	case <-shutdownSignal.Done():
-		logger.Info("api shutdown requested")
+	case err := <-listenErrors:
+		return err
+	case <-ctx.Done():
 	}
 
-	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelShutdown()
-	if err := server.Shutdown(shutdownContext); err != nil {
-		logger.Error("api graceful shutdown failed", "error", err)
-		os.Exit(1)
-	}
+	logger.Info("api shutting down")
+	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return httpServer.Shutdown(shutdown)
 }
 
-func runHealthcheck() {
-	client := http.Client{Timeout: 2 * time.Second}
-	response, err := client.Get("http://localhost:8080/healthz")
-	if err != nil || response.StatusCode != http.StatusOK {
-		os.Exit(1)
+func healthcheck() error {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = config.DefaultPort
 	}
-	_ = response.Body.Close()
+
+	client := http.Client{Timeout: 2 * time.Second}
+	response, err := client.Get("http://" + net.JoinHostPort("localhost", port) + "/healthz")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("health endpoint returned %d", response.StatusCode)
+	}
+	return nil
 }

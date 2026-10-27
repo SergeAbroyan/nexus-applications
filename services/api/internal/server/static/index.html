@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nexus Platform</title>
+    <link rel="stylesheet" href="/app.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <h1>Nexus Platform</h1>
+      <p>The Go API stores items in PostgreSQL and caches them in Valkey. Notifications travel through SQS to the Java worker.</p>
+      <form id="create-item">
+        <input name="name" placeholder="Item name" maxlength="200" required>
+        <button type="submit">Add item</button>
+      </form>
+      <form id="send-notification">
+        <input name="message" placeholder="Notification message" maxlength="500" required>
+        <button type="submit">Notify worker</button>
+      </form>
+      <p><button id="load-items" type="button">Load items</button></p>
+      <pre id="result" aria-live="polite">No request sent yet.</pre>
+    </main>
+  </body>
+</html>

@@ -1,12 +1,19 @@
 name: nexus
 
+x-local-aws: &local-aws
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: local
+  AWS_SECRET_ACCESS_KEY: local
+  AWS_ENDPOINT_URL_SQS: http://sqs:9324
+  SQS_QUEUE_URL: http://sqs:9324/000000000000/nexus-dev-jobs
+
 services:
   postgres:
     image: postgres:17.11-alpine3.24
     environment:
       POSTGRES_DB: nexus
       POSTGRES_USER: nexus
-      POSTGRES_PASSWORD: nexus-local-password
+      POSTGRES_PASSWORD: &database-password nexus-local-password
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -29,18 +36,12 @@ services:
       - ./local/elasticmq.conf:/opt/elasticmq.conf:ro
 
   api:
-    build:
-      context: .
-      dockerfile: services/api/Dockerfile
+    build: services/api
     environment:
+      <<: *local-aws
       DB_HOST: postgres
-      DB_PASSWORD: nexus-local-password
+      DB_PASSWORD: *database-password
       VALKEY_HOST: valkey
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: local
-      AWS_SECRET_ACCESS_KEY: local
-      SQS_ENDPOINT: http://sqs:9324
-      SQS_QUEUE_URL: http://sqs:9324/000000000000/nexus-dev-jobs
     ports:
       - "8081:8080"
     depends_on:
@@ -57,15 +58,9 @@ services:
       retries: 10
 
   worker:
-    build:
-      context: .
-      dockerfile: services/worker/Dockerfile
+    build: services/worker
     environment:
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: local
-      AWS_SECRET_ACCESS_KEY: local
-      SQS_ENDPOINT: http://sqs:9324
-      SQS_QUEUE_URL: http://sqs:9324/000000000000/nexus-dev-jobs
+      <<: *local-aws
       SQS_WAIT_TIME_SECONDS: 2
     depends_on:
       sqs:

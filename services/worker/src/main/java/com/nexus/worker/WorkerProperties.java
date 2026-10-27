@@ -1,12 +1,10 @@
 package com.nexus.worker;
 
-import java.net.URI;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties("nexus.worker")
 public record WorkerProperties(
         String queueUrl,
-        URI endpoint,
         int waitTimeSeconds,
         int visibilityTimeoutSeconds,
         long pollDelayMs) {

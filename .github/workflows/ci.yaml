@@ -1,4 +1,4 @@
-name: Application CI and ECR Release
+name: CI
 
 on:
   pull_request:
@@ -8,14 +8,13 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: application-ci-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 env:
-  ECR_NAMESPACE: nexus
   GITOPS_REPOSITORY: SergeAbroyan/nexus-gitops
 
 jobs:
@@ -26,10 +25,7 @@ jobs:
     env:
       GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
     outputs:
-      api: ${{ steps.services.outputs.api }}
-      worker: ${{ steps.services.outputs.worker }}
-      any: ${{ steps.services.outputs.any }}
-      matrix: ${{ steps.services.outputs.matrix }}
+      services: ${{ steps.services.outputs.services }}
     steps:
       - name: Check out source history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -47,9 +43,8 @@ jobs:
           persist-credentials: false
           sparse-checkout: environments/dev
 
-      - name: Select affected services
+      - name: Select changed services
         id: services
-        shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           BEFORE_SHA: ${{ github.event.before }}
@@ -58,19 +53,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          affected_services() {
+          services_in() {
             while IFS= read -r path; do
               case "${path}" in
-                services/api/*|services/observability/*|go.mod|go.sum)
-                  echo api
-                  ;;
-                services/worker/*)
-                  echo worker
-                  ;;
-                .dockerignore|Makefile|compose.yaml|sonar-project.properties|.github/workflows/ci.yaml)
-                  echo api
-                  echo worker
-                  ;;
+                services/api/*) echo api ;;
+                services/worker/*) echo worker ;;
+                .github/workflows/ci.yaml) printf '%s\n' api worker ;;
               esac
             done
           }
@@ -87,108 +75,74 @@ jobs:
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             services=$'api\nworker'
           elif [[ "${EVENT_NAME}" == "pull_request" ]]; then
-            services="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" | affected_services)"
+            services="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" | services_in)"
           elif [[ -d nexus-gitops/environments/dev ]]; then
             for service in api worker; do
               deployed="$(deployed_commit "${service}")"
               if [[ -z "${deployed}" ]]; then
                 services+=$'\n'"${service}"
-                continue
-              fi
-              changed="$(git diff --name-only "${deployed}" HEAD | affected_services)"
-              if grep -qx "${service}" <<< "${changed}"; then
+              elif grep -qx "${service}" <<< "$(git diff --name-only "${deployed}" HEAD | services_in)"; then
                 services+=$'\n'"${service}"
               fi
             done
           elif [[ "${BEFORE_SHA}" =~ ^0+$ ]]; then
-            services="$(git show --pretty='' --name-only HEAD | affected_services)"
+            services="$(git show --pretty='' --name-only HEAD | services_in)"
           else
-            services="$(git diff --name-only "${BEFORE_SHA}" HEAD | affected_services)"
+            services="$(git diff --name-only "${BEFORE_SHA}" HEAD | services_in)"
           fi
 
-          api=false
-          worker=false
-          if grep -qx api <<< "${services}"; then
-            api=true
-          fi
-          if grep -qx worker <<< "${services}"; then
-            worker=true
-          fi
+          echo "services=$(jq -cnR '[inputs | select(length > 0)] | unique' <<< "${services}")" >> "${GITHUB_OUTPUT}"
 
-          if [[ "${api}" == "true" && "${worker}" == "true" ]]; then
-            matrix='["api","worker"]'
-          elif [[ "${api}" == "true" ]]; then
-            matrix='["api"]'
-          elif [[ "${worker}" == "true" ]]; then
-            matrix='["worker"]'
-          else
-            matrix='[]'
-          fi
-
-          any=true
-          if [[ "${matrix}" == '[]' ]]; then
-            any=false
-          fi
-
-          {
-            echo "api=${api}"
-            echo "worker=${worker}"
-            echo "any=${any}"
-            echo "matrix=${matrix}"
-          } >> "${GITHUB_OUTPUT}"
-
-  quality:
-    name: Test changed services
-    if: needs.changes.outputs.any == 'true'
+  api:
+    name: Test API
     needs: changes
+    if: contains(fromJSON(needs.changes.outputs.services), 'api')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/api
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
 
       - name: Install Go
-        if: >-
-          needs.changes.outputs.api == 'true' ||
-          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          go-version-file: services/api/go.mod
+          cache-dependency-path: services/api/go.sum
 
-      - name: Verify formatting
-        if: >-
-          needs.changes.outputs.api == 'true' ||
-          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
-        run: test -z "$(gofmt -l .)"
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "${unformatted}" ]]; then
+            echo "Run gofmt -w on: ${unformatted}" >&2
+            exit 1
+          fi
 
-      - name: Vet packages
-        if: >-
-          needs.changes.outputs.api == 'true' ||
-          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
-        run: go vet ./...
-
-      - name: Verify module files
-        if: >-
-          needs.changes.outputs.api == 'true' ||
-          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
+      - name: Check module files
         run: go mod tidy -diff
 
-      - name: Run tests with race detection and coverage
-        if: >-
-          needs.changes.outputs.api == 'true' ||
-          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
-        run: go test -race -coverprofile=coverage.out ./...
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test with the race detector
+        run: go test -race ./...
+
+  worker:
+    name: Test worker
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.services), 'worker')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/worker
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Install Java
-        if: >-
-          needs.changes.outputs.worker == 'true' ||
-          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
@@ -196,77 +150,61 @@ jobs:
           cache: maven
           cache-dependency-path: services/worker/pom.xml
 
-      - name: Test Java worker
-        if: >-
-          needs.changes.outputs.worker == 'true' ||
-          (env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != '')
-        run: mvn -B -f services/worker/pom.xml verify
+      - name: Build and test
+        run: mvn -B -ntp verify
 
-      - name: Analyze with SonarQube
-        if: env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != ''
+  sonar:
+    name: SonarQube analysis
+    needs: changes
+    if: vars.SONAR_HOST_URL != '' && needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - name: Check out source history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: services/api/go.mod
+          cache-dependency-path: services/api/go.sum
+
+      - name: Measure API coverage
+        working-directory: services/api
+        run: go test -coverprofile=coverage.out ./...
+
+      - name: Install Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: services/worker/pom.xml
+
+      - name: Measure worker coverage
+        working-directory: services/worker
+        run: mvn -B -ntp verify
+
+      - name: Analyze
         uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9
 
-      - name: Enforce SonarQube Quality Gate
-        if: env.SONAR_HOST_URL != '' && env.SONAR_TOKEN != ''
+      - name: Enforce the quality gate
         uses: SonarSource/sonarqube-quality-gate-action@cf038b0e0cdecfa9e56c198bbb7d21d751d62c3b
         with:
           pollingTimeoutSec: 300
 
-  containers:
-    name: Validate ${{ matrix.service }} image
+  image:
+    name: Image ${{ matrix.service }}
+    needs: [changes, api, worker, sonar]
     if: >-
-      needs.changes.outputs.any == 'true' &&
-      (github.event_name == 'pull_request' ||
-      vars.AWS_ROLE_ARN == '' ||
-      vars.AWS_REGION == '')
-    needs: [changes, quality]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        service: ${{ fromJSON(needs.changes.outputs.matrix) }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      - name: Configure Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-
-      - name: Build container
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
-        with:
-          context: .
-          file: services/${{ matrix.service }}/Dockerfile
-          load: true
-          push: false
-          platforms: linux/amd64
-          tags: ${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.title=nexus-${{ matrix.service }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
-
-      - name: Scan container vulnerabilities
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
-        with:
-          image-ref: ${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          severity: HIGH,CRITICAL
-
-  publish:
-    name: Publish ${{ matrix.service }}
-    if: >-
-      needs.changes.outputs.any == 'true' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      github.ref == 'refs/heads/main' &&
-      vars.AWS_ROLE_ARN != '' &&
-      vars.AWS_REGION != ''
-    needs: [changes, quality]
+      !cancelled() &&
+      !contains(needs.*.result, 'failure') &&
+      needs.changes.outputs.services != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -275,46 +213,56 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJSON(needs.changes.outputs.matrix) }}
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    env:
+      RELEASE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' }}
+      REPOSITORY: nexus/${{ matrix.service }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Configure AWS credentials
+        if: env.RELEASE == 'true'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Sign in to Amazon ECR
+        if: env.RELEASE == 'true'
         id: ecr
         uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64
 
-      - name: Configure Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-
-      - name: Check whether image already exists
+      - name: Name the image
         id: image
         env:
-          IMAGE_TAG: ${{ github.sha }}
-          REPOSITORY: ${{ env.ECR_NAMESPACE }}/${{ matrix.service }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          if aws ecr describe-images --repository-name "${REPOSITORY}" --image-ids "imageTag=${IMAGE_TAG}" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+          exists=false
+          if [[ "${RELEASE}" == "true" ]]; then
+            name="${REGISTRY}/${REPOSITORY}:${GITHUB_SHA}"
+            if aws ecr describe-images --repository-name "${REPOSITORY}" --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+              exists=true
+            fi
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            name="${REPOSITORY}:${GITHUB_SHA}"
           fi
+          echo "name=${name}" >> "${GITHUB_OUTPUT}"
+          echo "exists=${exists}" >> "${GITHUB_OUTPUT}"
 
-      - name: Build release image
+      - name: Configure Docker Buildx
+        if: steps.image.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Build image
         if: steps.image.outputs.exists == 'false'
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
         with:
-          context: .
-          file: services/${{ matrix.service }}/Dockerfile
+          context: services/${{ matrix.service }}
           load: true
           push: false
           platforms: linux/amd64
-          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
+          tags: ${{ steps.image.outputs.name }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -322,44 +270,44 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-      - name: Scan release image
+      - name: Scan image for vulnerabilities
         if: steps.image.outputs.exists == 'false'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
-          image-ref: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
+          image-ref: ${{ steps.image.outputs.name }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
 
-      - name: Push verified image to ECR
-        if: steps.image.outputs.exists == 'false'
+      - name: Push image to ECR
+        if: env.RELEASE == 'true' && steps.image.outputs.exists == 'false'
         env:
-          IMAGE_URI: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
-        run: docker push "${IMAGE_URI}"
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: docker push "${IMAGE}"
 
-      - name: Record ECR image
+      - name: Record image digest
+        if: env.RELEASE == 'true'
         env:
-          IMAGE_TAG: ${{ github.sha }}
-          IMAGE_URI: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.service }}:${{ github.sha }}
-          REPOSITORY: ${{ env.ECR_NAMESPACE }}/${{ matrix.service }}
+          IMAGE: ${{ steps.image.outputs.name }}
         run: |
-          IMAGE_DIGEST=$(aws ecr describe-images \
+          digest="$(aws ecr describe-images \
             --repository-name "${REPOSITORY}" \
-            --image-ids "imageTag=${IMAGE_TAG}" \
+            --image-ids "imageTag=${GITHUB_SHA}" \
             --query 'imageDetails[0].imageDigest' \
-            --output text)
-          echo "\`${IMAGE_URI}@${IMAGE_DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+            --output text)"
+          echo "\`${IMAGE}@${digest}\`" >> "${GITHUB_STEP_SUMMARY}"
 
-  promote-dev:
-    name: Promote release to DEV
+  promote:
+    name: Promote to DEV
+    needs: [changes, image]
     if: >-
-      needs.changes.outputs.any == 'true' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      !cancelled() &&
+      needs.image.result == 'success' &&
+      github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
       vars.AWS_ROLE_ARN != '' &&
       vars.AWS_REGION != ''
-    needs: [changes, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -367,7 +315,7 @@ jobs:
     steps:
       - name: Record skipped promotion
         if: env.GITOPS_TOKEN == ''
-        run: echo "DEV promotion skipped because GITOPS_TOKEN is not configured." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "DEV promotion skipped because GITOPS_TOKEN is not configured." >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Check out GitOps repository
         if: env.GITOPS_TOKEN != ''
@@ -378,50 +326,36 @@ jobs:
           path: nexus-gitops
           token: ${{ secrets.GITOPS_TOKEN }}
 
-      - name: Update DEV release tag
+      - name: Point DEV at the new images
         if: env.GITOPS_TOKEN != ''
         working-directory: nexus-gitops
         env:
-          IMAGE_TAG: ${{ github.sha }}
-          API_CHANGED: ${{ needs.changes.outputs.api }}
-          WORKER_CHANGED: ${{ needs.changes.outputs.worker }}
+          SERVICES: ${{ needs.changes.outputs.services }}
         run: |
-          DEV_VALUE_FILES=()
-          if [[ "${API_CHANGED}" == "true" ]]; then
-            DEV_VALUE_FILES+=(environments/dev/api-values.yaml)
-          fi
-          if [[ "${WORKER_CHANGED}" == "true" ]]; then
-            DEV_VALUE_FILES+=(environments/dev/worker-values.yaml)
-          fi
+          set -euo pipefail
 
-          for values_file in "${DEV_VALUE_FILES[@]}"; do
-            sed -i -E "s/^  tag: .*/  tag: \"${IMAGE_TAG}\"/" "${values_file}"
-            grep -Fx "  tag: \"${IMAGE_TAG}\"" "${values_file}"
+          files=()
+          for service in $(jq -r '.[]' <<< "${SERVICES}"); do
+            file="environments/dev/${service}-values.yaml"
+            sed -i -E "s/^  tag: .*/  tag: \"${GITHUB_SHA}\"/" "${file}"
+            grep -Fqx "  tag: \"${GITHUB_SHA}\"" "${file}"
+            files+=("${file}")
           done
 
-      - name: Commit and push DEV promotion
-        if: env.GITOPS_TOKEN != ''
-        working-directory: nexus-gitops
-        env:
-          IMAGE_TAG: ${{ github.sha }}
-          API_CHANGED: ${{ needs.changes.outputs.api }}
-          WORKER_CHANGED: ${{ needs.changes.outputs.worker }}
-        run: |
-          DEV_VALUE_FILES=()
-          if [[ "${API_CHANGED}" == "true" ]]; then
-            DEV_VALUE_FILES+=(environments/dev/api-values.yaml)
-          fi
-          if [[ "${WORKER_CHANGED}" == "true" ]]; then
-            DEV_VALUE_FILES+=(environments/dev/worker-values.yaml)
-          fi
-
-          if git diff --quiet -- "${DEV_VALUE_FILES[@]}"; then
-            echo "DEV already uses ${IMAGE_TAG}." >> "$GITHUB_STEP_SUMMARY"
+          if git diff --quiet -- "${files[@]}"; then
+            echo "DEV already runs ${GITHUB_SHA}." >> "${GITHUB_STEP_SUMMARY}"
             exit 0
           fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${DEV_VALUE_FILES[@]}"
-          git commit -m "deploy(dev): ${IMAGE_TAG}"
-          git push origin HEAD:main
-          echo "Promoted DEV to \`${IMAGE_TAG}\`." >> "$GITHUB_STEP_SUMMARY"
+          git commit --quiet -m "deploy(dev): ${GITHUB_SHA}" -- "${files[@]}"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Promoted DEV to \`${GITHUB_SHA}\`." >> "${GITHUB_STEP_SUMMARY}"
+              exit 0
+            fi
+            echo "Push attempt ${attempt} was rejected; rebasing on the latest GitOps commit." >&2
+            git pull --rebase origin main
+          done
+          exit 1

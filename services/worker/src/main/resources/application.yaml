@@ -3,10 +3,20 @@ spring:
     name: nexus-worker
   lifecycle:
     timeout-per-shutdown-phase: 20s
+  task:
+    scheduling:
+      shutdown:
+        await-termination: true
+        await-termination-period: 20s
 
 server:
   port: ${PORT:8080}
   shutdown: graceful
+
+logging:
+  structured:
+    format:
+      console: ecs
 
 management:
   endpoints:
@@ -28,8 +38,7 @@ management:
 
 nexus:
   worker:
-    queue-url: ${SQS_QUEUE_URL}
-    endpoint: ${SQS_ENDPOINT:}
+    queue-url: ${SQS_QUEUE_URL:}
     wait-time-seconds: ${SQS_WAIT_TIME_SECONDS:20}
     visibility-timeout-seconds: ${SQS_VISIBILITY_TIMEOUT_SECONDS:60}
     poll-delay-ms: ${SQS_POLL_DELAY_MS:1000}
