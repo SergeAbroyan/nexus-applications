@@ -40,6 +40,15 @@ func newPostgresStore(ctx context.Context, databaseURL string) (*postgresStore, 
 		return nil, err
 	}
 
+	replica, err := store.isReplica(ctx)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if replica {
+		return store, nil
+	}
+
 	ctx, span := postgresSpan(ctx, "CREATE")
 	_, err = pool.Exec(ctx, createItemsTable)
 	observability.RecordSpanError(span, err)
@@ -54,6 +63,16 @@ func newPostgresStore(ctx context.Context, databaseURL string) (*postgresStore, 
 
 func (store *postgresStore) Close() {
 	store.pool.Close()
+}
+
+func (store *postgresStore) isReplica(ctx context.Context) (bool, error) {
+	ctx, span := postgresSpan(ctx, "SELECT")
+	defer span.End()
+
+	var inRecovery bool
+	err := store.pool.QueryRow(ctx, `SELECT pg_is_in_recovery()`).Scan(&inRecovery)
+	observability.RecordSpanError(span, err)
+	return inRecovery, err
 }
 
 func (store *postgresStore) Ping(ctx context.Context) error {

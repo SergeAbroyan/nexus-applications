@@ -45,6 +45,10 @@ The API is compiled as a static binary and runs as UID `65532` in a scratch
 container. The HTML page is embedded into that binary, so it does not require a
 separate frontend deployment.
 
+At startup the API creates its table only when PostgreSQL accepts writes. In
+the disaster-recovery standby region it connects to a read replica, skips the
+schema step, and serves reads until the replica is promoted.
+
 ## Java Worker
 
 The Java worker uses Spring Boot, AWS SDK for Java v2 and Java 21. It long-polls
@@ -125,8 +129,10 @@ credentials for ElasticMQ. EKS uses Pod Identity.
 2. test the affected service, while a configured SonarQube scan analyzes both languages;
 3. build and scan only the affected `api` or `worker` image;
 4. authenticate to AWS through GitHub OIDC;
-5. push an immutable commit-SHA tag to ECR;
-6. update only the affected DEV image tag in `nexus-gitops`.
+5. push an immutable commit-SHA tag to ECR in the primary region, which
+   replicates the image to the standby region;
+6. update only the affected DEV image tag in `nexus-gitops`, which both
+   regions deploy.
 
 Manual workflow runs intentionally select both services. Changes to shared
 container, Compose, analysis or workflow files also validate both services.
