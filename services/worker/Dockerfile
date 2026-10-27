@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM maven:3.9.12-eclipse-temurin-21-alpine AS build
+FROM maven:3.9.16-eclipse-temurin-25-alpine AS build
 
 WORKDIR /src
 
@@ -8,7 +8,7 @@ COPY pom.xml ./
 COPY src ./src
 RUN --mount=type=cache,target=/root/.m2 mvn -B -ntp package -Dmaven.test.skip=true
 
-FROM gcr.io/distroless/java21-debian13:nonroot
+FROM gcr.io/distroless/java25-debian13:nonroot
 
 WORKDIR /app
 

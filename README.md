@@ -6,7 +6,7 @@ metrics, and structured logs.
 
 - `api` is a Go service that serves the web page and REST API, stores items in
   PostgreSQL, caches reads in Valkey, and queues notifications in SQS.
-- `worker` is a Java 21 Spring Boot service that long-polls SQS and processes
+- `worker` is a Java 25 Spring Boot service that long-polls SQS and processes
   the notifications.
 
 Each service folder is self-contained: its own dependencies, tests, and
@@ -33,7 +33,7 @@ services/
     ├── src/main/java/          SQS polling, message model, configuration
     ├── src/test/java/          Unit tests
     ├── pom.xml
-    └── Dockerfile              Fat jar in a distroless Java 21 image
+    └── Dockerfile              Fat jar in a distroless Java 25 image
 local/elasticmq.conf            Local SQS queue and dead-letter queue
 compose.yaml                    Complete local environment
 sonar-project.properties        Optional SonarQube analysis
@@ -143,7 +143,7 @@ Without a local Go or Java toolchain, run them in the build images instead:
 
 ```bash
 docker run --rm -v "$PWD/services/api:/src" -w /src golang:1.27.3-alpine go test ./...
-docker run --rm -v "$PWD/services/worker:/src" -w /src maven:3.9.12-eclipse-temurin-21-alpine mvn -B verify
+docker run --rm -v "$PWD/services/worker:/src" -w /src maven:3.9.16-eclipse-temurin-25-alpine mvn -B verify
 ```
 
 ## CI and delivery
