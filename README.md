@@ -142,7 +142,7 @@ cd services/worker && mvn verify
 Without a local Go or Java toolchain, run them in the build images instead:
 
 ```bash
-docker run --rm -v "$PWD/services/api:/src" -w /src golang:1.27.1-alpine go test ./...
+docker run --rm -v "$PWD/services/api:/src" -w /src golang:1.27.3-alpine go test ./...
 docker run --rm -v "$PWD/services/worker:/src" -w /src maven:3.9.12-eclipse-temurin-21-alpine mvn -B verify
 ```
 
@@ -174,7 +174,8 @@ dependencies, and base images current.
 
 Repository settings, once the infrastructure exists:
 
-- variable `AWS_ROLE_ARN`, the `ci-identity` output of `nexus-platform`;
+- variable `AWS_ROLE_ARN`, the `application_ci_role_arn` output of the `global`
+  unit in `nexus-platform`;
 - variable `AWS_REGION`, currently `us-east-1`;
 - secret `GITOPS_TOKEN` with write access to `nexus-gitops` only;
 - optionally variable `SONAR_HOST_URL` and secret `SONAR_TOKEN`.
