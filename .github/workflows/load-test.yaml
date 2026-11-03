@@ -1,0 +1,98 @@
+name: Load test
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - services/**
+      - load/**
+      - compose.yaml
+      - local/**
+      - .github/workflows/load-test.yaml
+  workflow_dispatch:
+    inputs:
+      base-url:
+        description: Address of the environment to test, such as https://nexus-dev.example.com
+        required: true
+        type: string
+      users:
+        description: Concurrent virtual users at full load
+        required: true
+        default: "20"
+        type: string
+      duration:
+        description: How long to hold full load, such as 5m
+        required: true
+        default: 5m
+        type: string
+
+concurrency:
+  group: load-test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  compose:
+    name: Smoke test the Compose stack
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start PostgreSQL, Valkey, ElasticMQ, the API, and the worker
+        run: docker compose up --build --wait --quiet-pull
+
+      - name: Install k6
+        uses: grafana/setup-k6-action@43b9fc21641a76002687994433dd586f56e791b1 # v1.2.2
+        with:
+          k6-version: 2.3.0
+
+      - name: Run the load test
+        uses: grafana/run-k6-action@4082a08c7e40cf6d65863911077dfb60ae0a4f04 # v1.5.0
+        env:
+          BASE_URL: http://localhost:8081
+          VUS: "5"
+          RAMP_UP: 10s
+          DURATION: 30s
+        with:
+          path: load/api.js
+
+      - name: Check that the worker processed the queued notifications
+        run: |
+          set -euo pipefail
+          docker compose logs worker | grep -q "Processed notification"
+
+      - name: Show service logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes
+
+  environment:
+    name: Load test ${{ inputs.base-url }}
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install k6
+        uses: grafana/setup-k6-action@43b9fc21641a76002687994433dd586f56e791b1 # v1.2.2
+        with:
+          k6-version: 2.3.0
+
+      - name: Run the load test
+        uses: grafana/run-k6-action@4082a08c7e40cf6d65863911077dfb60ae0a4f04 # v1.5.0
+        env:
+          BASE_URL: ${{ inputs.base-url }}
+          VUS: ${{ inputs.users }}
+          DURATION: ${{ inputs.duration }}
+        with:
+          path: load/api.js

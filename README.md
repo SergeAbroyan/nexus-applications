@@ -26,16 +26,18 @@ services/
 │   │   ├── valkey/             Cache client and ElastiCache IAM authentication
 │   │   ├── sqs/                Queue client that forwards the trace context
 │   │   ├── server/             Routes, handlers, and the embedded web page
-│   │   └── telemetry/          Tracing, JSON logs, and Prometheus metrics
+│   │   └── telemetry/          Tracing, profiling, JSON logs, and Prometheus metrics
 │   ├── go.mod
 │   └── Dockerfile              Static binary in a scratch image
 └── worker/
-    ├── src/main/java/          SQS polling, message model, configuration
-    ├── src/test/java/          Unit tests
+    ├── src/main/java/          SQS polling, message model, tracing, profiling, configuration
+    ├── src/test/java/          Unit tests and the ElasticMQ integration test
     ├── pom.xml
     └── Dockerfile              Fat jar in a distroless Java 25 image
+load/api.js                     k6 load test of the API
 local/elasticmq.conf            Local SQS queue and dead-letter queue
 compose.yaml                    Complete local environment
+compose.observability.yaml      Optional Grafana, Tempo, Loki, Prometheus, and Pyroscope
 sonar-project.properties        Optional SonarQube analysis
 ```
 
@@ -69,7 +71,8 @@ Requests are traced with OpenTelemetry, and the trace context continues through
 PostgreSQL, Valkey, and SQS. Logs are JSON and carry the `trace_id`. The
 metrics cover the application routes (`nexus_http_requests_total`,
 `nexus_http_requests_in_flight`) plus the Go runtime and process; probes and
-`/metrics` are not counted or traced.
+`/metrics` are not counted or traced. When `PYROSCOPE_SERVER_ADDRESS` is set,
+the API also sends CPU, allocation, heap, and goroutine profiles to Pyroscope.
 
 ## Worker
 
@@ -78,8 +81,12 @@ only after it has been processed. A message that fails stays in the queue, is
 delivered again after the visibility timeout, and moves to the dead-letter
 queue after repeated failures. On shutdown it finishes the batch in progress.
 
-Logs are JSON in the Elastic Common Schema format, and each processed message
-logs the `trace_id` of the API request that queued it. Spring Boot Actuator
+Each message is processed in an OpenTelemetry consumer span whose parent is
+the API request that queued it, read from the `traceparent`, `tracestate`, and
+`baggage` message attributes, so one trace in Tempo shows the request and the
+work it caused. Logs are JSON in the Elastic Common Schema format and carry the
+same `trace_id`. When `PYROSCOPE_SERVER_ADDRESS` is set, the worker sends CPU
+and allocation profiles to Pyroscope. Spring Boot Actuator
 serves `GET /livez`, `GET /readyz`, and `GET /metrics`, including
 `nexus_worker_messages_total{outcome}` and
 `nexus_worker_receive_failures_total`.
@@ -111,7 +118,8 @@ so the API can add fields before the worker uses them.
 | `VALKEY_TLS` | api | `false` | Connect to Valkey over TLS |
 | `VALKEY_IAM_AUTH`, `VALKEY_USERNAME`, `VALKEY_CACHE_NAME` | api | `false` | ElastiCache IAM authentication |
 | `VALKEY_CACHE_TTL` | api | `30s` | Lifetime of the cached item list |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | api | tracing off | Standard OpenTelemetry settings |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`, `OTEL_RESOURCE_ATTRIBUTES` | both | tracing off | Standard OpenTelemetry settings |
+| `PYROSCOPE_SERVER_ADDRESS` | both | profiling off | Pyroscope server that receives continuous profiles |
 | `SQS_WAIT_TIME_SECONDS` | worker | `20` | Long-poll duration |
 | `SQS_VISIBILITY_TIMEOUT_SECONDS` | worker | `60` | Time to process a message before redelivery |
 | `SQS_POLL_DELAY_MS` | worker | `1000` | Pause between polls |
@@ -130,20 +138,47 @@ docker compose up --build --wait
 
 Open <http://localhost:8081>; port `8081` avoids the Jenkins service on `8080`.
 Follow the worker with `docker compose logs --follow worker` and stop everything
-with `docker compose down`, which keeps the PostgreSQL volume.
+with `docker compose down`, which keeps the PostgreSQL volume. A volume created
+by an earlier PostgreSQL major version cannot be opened by PostgreSQL 18; remove
+it with `docker compose down --volumes` and start again.
 
-Run the tests:
+To see traces, logs, metrics, and profiles locally, add the observability
+overlay. It runs Grafana's all-in-one OpenTelemetry image and points both
+services at it, so Grafana at <http://localhost:3000> shows each API request
+and the worker span it caused in Tempo, and both services in Pyroscope:
 
 ```bash
-cd services/api && go test -race ./...
+docker compose -f compose.yaml -f compose.observability.yaml up --build --wait
+```
+
+Run the tests. The API's integration tests, tagged `integration`, start
+PostgreSQL 18, Valkey 9.1, and ElasticMQ with Testcontainers and need Docker;
+the worker's `mvn verify` runs its unit tests and then `NotificationWorkerIT`
+against ElasticMQ:
+
+```bash
+cd services/api && go test -race ./... && go test -race -tags integration ./...
 cd services/worker && mvn verify
 ```
 
-Without a local Go or Java toolchain, run them in the build images instead:
+Without a local Go or Java toolchain, run them in the build images instead.
+The Docker socket lets Testcontainers start its containers from inside:
 
 ```bash
-docker run --rm -v "$PWD/services/api:/src" -w /src golang:1.27.3-alpine go test ./...
-docker run --rm -v "$PWD/services/worker:/src" -w /src maven:3.9.16-eclipse-temurin-25-alpine mvn -B verify
+docker run --rm -v "$PWD/services/api:/src" -w /src \
+  -v /var/run/docker.sock:/var/run/docker.sock -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+  golang:1.27.3-alpine go test -tags integration ./...
+docker run --rm -v "$PWD/services/worker:/src" -w /src \
+  -v /var/run/docker.sock:/var/run/docker.sock -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+  maven:3.9.16-eclipse-temurin-25-alpine mvn -B verify
+```
+
+Load the running stack with k6. `VUS`, `RAMP_UP`, and `DURATION` size the run,
+and the thresholds fail it when more than 0.5% of requests fail or the 99th
+percentile exceeds 500 ms, the API's latency objective:
+
+```bash
+docker run --rm -i --network nexus_default -e BASE_URL=http://api:8080 -e VUS=10 grafana/k6:2.3.0 run - < load/api.js
 ```
 
 ## CI and delivery
@@ -155,22 +190,37 @@ demand:
    compares each service with the commit that DEV runs, read from
    `nexus-gitops`, so a failed or superseded run never drops a change. A
    manual run selects both services, and a change to the workflow selects both.
-2. **Test.** The API job checks formatting, module files, and `go vet`, and
-   runs the tests with the race detector; the worker job runs `mvn verify`.
-   When `SONAR_HOST_URL` is set, SonarQube analyzes both services and enforces
-   its quality gate.
+2. **Test.** Gitleaks scans the history for committed secrets. The API job
+   checks formatting, module files, and `go vet`, and runs the unit and
+   Testcontainers integration tests with the race detector; the worker job runs
+   `mvn verify`, including its integration test. When `SONAR_HOST_URL` is set,
+   SonarQube analyzes both services and enforces its quality gate.
 3. **Build and scan** each changed image and fail on fixable high or critical
    vulnerabilities.
 4. **Publish** on `main`: sign in to AWS with GitHub OIDC and push an immutable
    commit-SHA tag to ECR in the primary region, which replicates it to the
    standby region. An image that already exists is not rebuilt.
-5. **Promote to DEV** by updating the image tag of each published service in
-   `nexus-gitops`; Argo CD rolls it out in both regions.
+5. **Sign and attest.** cosign signs the image digest without a key, using
+   the GitHub OIDC identity of this workflow on `main`, and attaches an SPDX
+   SBOM generated by Syft as a signed attestation. Both are stored in ECR next
+   to the image. Kyverno in every cluster admits only Nexus images signed by
+   this workflow, so an image pushed any other way never runs.
+6. **Promote to DEV** by updating the image tag of each published service in
+   `nexus-gitops`; Argo CD rolls the API out as a canary and the worker as a
+   rolling update, in both regions.
+
+`.github/workflows/load-test.yaml` starts the Compose stack on every pull
+request that changes a service and runs a short k6 test against it, then checks
+that the worker processed the queued notifications. Run it from the Actions
+tab with an environment's address, users, and duration to load test DEV or
+staging.
 
 Runs on `main` queue instead of cancelling each other. Staging and production
-change only through a deliberate GitOps commit that points them at an image SHA
-already tested in DEV. Dependabot keeps GitHub Actions, Go modules, Maven
-dependencies, and base images current.
+change only through the approved `Promote release` workflow in `nexus-gitops`,
+which copies an image SHA already tested in the previous environment. Renovate
+opens weekly grouped pull requests for Go modules, Maven dependencies, base
+images, the Testcontainers images, the k6 and cosign versions, and GitHub
+Actions. Install the local hooks once with `pre-commit install`.
 
 Repository settings, once the infrastructure exists:
 

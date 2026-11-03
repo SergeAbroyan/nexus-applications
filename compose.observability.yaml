@@ -1,0 +1,29 @@
+x-telemetry: &telemetry
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_TRACES_SAMPLER: parentbased_always_on
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=local
+  PYROSCOPE_SERVER_ADDRESS: http://lgtm:4040
+
+services:
+  lgtm:
+    image: grafana/otel-lgtm:0.39.0
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  api:
+    environment: *telemetry
+    depends_on:
+      lgtm:
+        condition: service_healthy
+
+  worker:
+    environment: *telemetry
+    depends_on:
+      lgtm:
+        condition: service_healthy

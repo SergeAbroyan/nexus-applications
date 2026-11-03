@@ -65,6 +65,16 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
+	stopProfiling, err := telemetry.StartProfiling(serviceName)
+	if err != nil {
+		return fmt.Errorf("start profiling: %w", err)
+	}
+	defer func() {
+		if err := stopProfiling(); err != nil {
+			logger.Warn("stop profiling", "error", err)
+		}
+	}()
+
 	awsConfig, err := awsconfig.LoadDefaultConfig(startup)
 	if err != nil {
 		return fmt.Errorf("load AWS configuration: %w", err)

@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Lines that reference a container image by repository and version"
+regexTarget = "line"
+regexes = ['''[a-z0-9.-]+/[a-z0-9./-]+:[0-9]+\.[0-9]+[A-Za-z0-9._-]*''']
