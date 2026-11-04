@@ -1,0 +1,4 @@
+{
+  "services/api": "0.1.0",
+  "services/worker": "0.1.0"
+}

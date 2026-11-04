@@ -77,6 +77,7 @@ jobs:
               case "${path}" in
                 services/api/*) echo api ;;
                 services/worker/*) echo worker ;;
+                contracts/*) printf '%s\n' api worker ;;
                 .github/workflows/ci.yaml) printf '%s\n' api worker ;;
               esac
             done
@@ -230,6 +231,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
+      attestations: write
       contents: read
       id-token: write
     strategy:
@@ -320,8 +322,17 @@ jobs:
             --image-ids "imageTag=${GITHUB_SHA}" \
             --query 'imageDetails[0].imageDigest' \
             --output text)"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           echo "reference=${REGISTRY}/${REPOSITORY}@${digest}" >> "${GITHUB_OUTPUT}"
           echo "\`${IMAGE}@${digest}\`" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Attest build provenance
+        if: env.RELEASE == 'true' && github.event.repository.visibility == 'public'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
 
       - name: Install cosign
         if: env.RELEASE == 'true'

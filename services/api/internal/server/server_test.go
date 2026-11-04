@@ -85,6 +85,22 @@ func TestServesTheWebPageWithSecurityHeaders(t *testing.T) {
 	if policy := page.Header().Get("Content-Security-Policy"); !strings.Contains(policy, "default-src 'self'") || strings.Contains(policy, "unsafe-inline") {
 		t.Fatalf("unexpected Content-Security-Policy %q", policy)
 	}
+	for header, want := range map[string]string{
+		"Cross-Origin-Embedder-Policy": "require-corp",
+		"Cross-Origin-Opener-Policy":   "same-origin",
+		"Cross-Origin-Resource-Policy": "same-origin",
+		"X-Frame-Options":              "DENY",
+	} {
+		if got := page.Header().Get(header); got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
+	}
+	if page.Header().Get("Permissions-Policy") == "" {
+		t.Fatal("Permissions-Policy is missing")
+	}
+	if cache := server.do(http.MethodGet, "/api/items", "").Header().Get("Cache-Control"); cache != "no-store" {
+		t.Fatalf("API Cache-Control = %q, want no-store", cache)
+	}
 
 	script := server.do(http.MethodGet, "/app.js", "")
 	expect(t, script, http.StatusOK, `"/api/items"`)

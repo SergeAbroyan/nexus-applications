@@ -3,6 +3,7 @@ package com.nexus.worker;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.nio.file.Path;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import tools.jackson.core.JacksonException;
@@ -20,6 +21,15 @@ class NotificationTest {
 
         assertThat(notification.message()).isEqualTo("hello");
         assertThat(notification.createdAt()).isEqualTo(Instant.parse("2026-10-27T09:30:00Z"));
+    }
+
+    @Test
+    void readsTheSharedContractExample() {
+        var notification = objectMapper.readValue(
+                Path.of("../../contracts/notification.example.json").toFile(), Notification.class);
+
+        assertThat(notification.type()).isEqualTo("notification.requested");
+        assertThat(notification.message()).isEqualTo("hello");
     }
 
     @Test

@@ -12,6 +12,32 @@ metrics, and structured logs.
 Each service folder is self-contained: its own dependencies, tests, and
 Dockerfile, built with the folder as the Docker context.
 
+```mermaid
+flowchart LR
+  browser(["Browser"]) -->|HTTPS| api["api (Go)"]
+  api -->|items| pg[("PostgreSQL")]
+  api -->|cached list| valkey[("Valkey")]
+  api -->|notification + traceparent| sqs[["SQS queue"]]
+  sqs --> worker["worker (Java)"]
+  api -.->|spans| otel["OpenTelemetry collector"]
+  worker -.->|child spans| otel
+  api -.->|profiles| pyro["Pyroscope"]
+  worker -.->|profiles| pyro
+```
+
+```mermaid
+flowchart LR
+  pr["Pull request"] --> test["Gitleaks, unit, contract,<br/>and Testcontainers tests"]
+  test --> scan["Build, Trivy scan,<br/>k6 and ZAP on Compose"]
+  scan -->|main| push["Push to ECR"]
+  push --> sign["cosign signature,<br/>SBOM, provenance"]
+  sign --> dev["Image tag committed to<br/>nexus-gitops DEV"]
+  dev --> canary["Argo CD canary<br/>verified by Kyverno"]
+```
+
+The [architecture decision records](docs/adr/README.md) explain the main
+choices.
+
 ## Structure
 
 ```text
@@ -22,10 +48,10 @@ services/
 │   │   ├── config/             Environment variables
 │   │   ├── items/              Item rules and the read-through cache
 │   │   ├── notifications/      The notification message sent to the worker
-│   │   ├── postgres/           Item storage and schema
+│   │   ├── postgres/           Item storage and versioned schema migrations
 │   │   ├── valkey/             Cache client and ElastiCache IAM authentication
 │   │   ├── sqs/                Queue client that forwards the trace context
-│   │   ├── server/             Routes, handlers, and the embedded web page
+│   │   ├── server/             Routes, handlers, the OpenAPI document, and the embedded web page
 │   │   └── telemetry/          Tracing, profiling, JSON logs, and Prometheus metrics
 │   ├── go.mod
 │   └── Dockerfile              Static binary in a scratch image
@@ -34,7 +60,11 @@ services/
     ├── src/test/java/          Unit tests and the ElasticMQ integration test
     ├── pom.xml
     └── Dockerfile              Fat jar in a distroless Java 25 image
+contracts/                      JSON Schema and example of the queue message, shared by both services
 load/api.js                     k6 load test of the API
+.zap/rules.tsv                  Alerts the ZAP scan may ignore, with the reason
+release-please-config.json      How Release Please versions each service
+docs/adr/                       Architecture decision records
 local/elasticmq.conf            Local SQS queue and dead-letter queue
 compose.yaml                    Complete local environment
 compose.observability.yaml      Optional Grafana, Tempo, Loki, Prometheus, and Pyroscope
@@ -56,16 +86,29 @@ tested without any infrastructure.
 | `GET /healthz` | Liveness: the process is running |
 | `GET /readyz` | Readiness: PostgreSQL answers |
 | `GET /metrics` | Prometheus metrics |
+| `GET /api/openapi.yaml` | The OpenAPI 3 document of the endpoints above |
 
 Item lists are read through Valkey: a miss reads PostgreSQL and fills the
 cache, and creating an item clears it. Valkey is an optimization, so when it
 fails the API logs a warning and serves from PostgreSQL, and readiness ignores
 it.
 
-At startup the API creates its table only when PostgreSQL accepts writes. In
-the disaster-recovery standby region the database is a read replica, so the API
-skips the schema step, serves reads, and answers item creation with `503` until
-the replica is promoted.
+At startup the API applies the versioned migrations in
+`internal/postgres/migrations` with golang-migrate, which records the version
+in `schema_migrations` and holds a PostgreSQL advisory lock, so pods that start
+together apply each migration once. Because a canary runs the old and new
+versions side by side, every migration must keep the previous version working:
+add columns and tables first, remove them in a later release. In the
+disaster-recovery standby region the database is a read replica, so the API
+skips migrations, serves reads, and answers item creation with `503` until the
+replica is promoted.
+
+`internal/server/openapi.yaml` documents every application endpoint, and the
+API serves it at `/api/openapi.yaml`. A contract test sends a request for each
+documented operation and response code, validates both against the document,
+and fails when an operation is documented but not tested. Every response
+carries a strict Content Security Policy and cross-origin isolation headers,
+and API responses are never cached.
 
 Requests are traced with OpenTelemetry, and the trace context continues through
 PostgreSQL, Valkey, and SQS. Logs are JSON and carry the `trace_id`. The
@@ -100,9 +143,11 @@ message attribute:
 {"type": "notification.requested", "message": "hello", "createdAt": "2026-10-27T09:30:00Z"}
 ```
 
-The contract is defined in `internal/notifications` for the API and in
-`Notification.java` for the worker. The worker ignores fields it does not know,
-so the API can add fields before the worker uses them.
+`contracts/notification.schema.json` is the single definition. The API's
+tests validate every message it produces, and the shared example, against the
+schema; the worker's tests read the same example. A change that breaks either
+side fails CI for both services. The worker ignores fields it does not know, so
+the API can add optional fields before the worker uses them.
 
 ## Configuration
 
@@ -209,6 +254,24 @@ demand:
    `nexus-gitops`; Argo CD rolls the API out as a canary and the worker as a
    rolling update, in both regions.
 
+When the repository is public, step 5 also attaches a signed SLSA build
+provenance attestation that records the workflow, commit, and runner that
+built the image; verify it with
+`gh attestation verify oci://<image> --owner SergeAbroyan`. GitHub offers
+attestations for private repositories only on Enterprise plans, so the step is
+skipped while the repository is private.
+
+`.github/workflows/dast.yaml` runs an OWASP ZAP baseline scan against the
+Compose stack on pull requests that change the API and every Monday, and on
+demand against a deployed address. Any warning that `.zap/rules.tsv` does not
+explicitly ignore fails the scan; the HTML report is kept as an artifact.
+
+`.github/workflows/release-please.yaml` reads the conventional commit messages
+on `main` and keeps a release pull request open with the next version and
+changelog of each service. Merging it tags `api-v<version>` or
+`worker-v<version>` and publishes a GitHub release. Images stay tagged by
+commit SHA, so a release names the exact image that was tested.
+
 `.github/workflows/load-test.yaml` starts the Compose stack on every pull
 request that changes a service and runs a short k6 test against it, then checks
 that the worker processed the queued notifications. Run it from the Actions
@@ -228,7 +291,9 @@ Repository settings, once the infrastructure exists:
   unit in `nexus-platform`;
 - variable `AWS_REGION`, currently `us-east-1`;
 - secret `GITOPS_TOKEN` with write access to `nexus-gitops` only;
-- optionally variable `SONAR_HOST_URL` and secret `SONAR_TOKEN`.
+- optionally variable `SONAR_HOST_URL` and secret `SONAR_TOKEN`;
+- Settings → Actions → General → **Allow GitHub Actions to create and approve
+  pull requests**, which Release Please needs.
 
 Without the AWS settings, CI still tests, builds, and scans, but does not
 publish.

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Notification message",
+  "description": "Body of the SQS message that the API sends and the worker processes. Consumers ignore fields they do not know, so producers may add optional fields.",
+  "type": "object",
+  "required": ["type", "message", "createdAt"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["notification.requested"]
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

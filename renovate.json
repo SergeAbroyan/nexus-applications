@@ -23,6 +23,13 @@
     },
     {
       "customType": "regex",
+      "description": "ZAP image used by the security scan",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.yaml$/"],
+      "matchStrings": ["ZAP_IMAGE: (?<depName>[a-z0-9./-]+):(?<currentValue>\\S+)"],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
       "description": "cosign version installed in workflows",
       "managerFilePatterns": ["/^\\.github/workflows/.+\\.yaml$/"],
       "matchStrings": ["cosign-release: (?<currentValue>\\S+)"],

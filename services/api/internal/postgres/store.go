@@ -2,26 +2,26 @@ package postgres
 
 import (
 	"context"
+	"embed"
 	"errors"
 	"fmt"
 
 	"github.com/exaring/otelpgx"
+	"github.com/golang-migrate/migrate/v4"
+	migratepgx "github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/SergeAbroyan/nexus-applications/services/api/internal/items"
 )
 
-const (
-	schema = `
-CREATE TABLE IF NOT EXISTS items (
-    id BIGSERIAL PRIMARY KEY,
-    name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 200),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)`
-	readOnlyTransaction = "25006"
-)
+const readOnlyTransaction = "25006"
+
+//go:embed migrations/*.sql
+var migrations embed.FS
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -56,10 +56,26 @@ func (store *Store) migrate(ctx context.Context) error {
 		return nil
 	}
 
-	if _, err := store.pool.Exec(ctx, schema); err != nil {
-		return fmt.Errorf("create schema: %w", err)
+	source, err := iofs.New(migrations, "migrations")
+	if err != nil {
+		return fmt.Errorf("read migrations: %w", err)
 	}
-	return nil
+	database := stdlib.OpenDBFromPool(store.pool)
+	driver, err := migratepgx.WithInstance(database, &migratepgx.Config{})
+	if err != nil {
+		return errors.Join(fmt.Errorf("prepare migrations: %w", err), database.Close())
+	}
+	migrator, err := migrate.NewWithInstance("iofs", source, "pgx5", driver)
+	if err != nil {
+		return errors.Join(fmt.Errorf("prepare migrations: %w", err), driver.Close())
+	}
+
+	applied := migrator.Up()
+	sourceErr, databaseErr := migrator.Close()
+	if applied != nil && !errors.Is(applied, migrate.ErrNoChange) {
+		return fmt.Errorf("apply migrations: %w", applied)
+	}
+	return errors.Join(sourceErr, databaseErr)
 }
 
 func (store *Store) Ping(ctx context.Context) error {

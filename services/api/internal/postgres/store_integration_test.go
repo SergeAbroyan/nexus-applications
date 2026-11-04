@@ -64,4 +64,13 @@ func TestStoreAgainstPostgreSQL(t *testing.T) {
 	if _, err := store.CreateItem(ctx, ""); err == nil {
 		t.Fatal("an empty name was accepted")
 	}
+
+	var version int
+	var dirty bool
+	if err := store.pool.QueryRow(ctx, `SELECT version, dirty FROM schema_migrations`).Scan(&version, &dirty); err != nil {
+		t.Fatalf("read migration version: %v", err)
+	}
+	if version != 1 || dirty {
+		t.Fatalf("migration version = %d dirty = %v, want 1 and clean", version, dirty)
+	}
 }

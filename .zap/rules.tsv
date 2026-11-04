@@ -1,0 +1,2 @@
+10049	IGNORE	(Storable and Cacheable Content: the static page and assets may be cached; API responses send Cache-Control no-store)
+10109	IGNORE	(Modern Web Application: informational, the page is rendered by JavaScript)

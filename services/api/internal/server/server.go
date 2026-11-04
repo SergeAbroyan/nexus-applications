@@ -16,6 +16,9 @@ import (
 //go:embed static
 var embedded embed.FS
 
+//go:embed openapi.yaml
+var OpenAPI []byte
+
 type ItemService interface {
 	List(ctx context.Context) ([]items.Item, items.Source, error)
 	Create(ctx context.Context, name string) (items.Item, error)
@@ -51,6 +54,7 @@ func New(dependencies Dependencies) http.Handler {
 	application.HandleFunc("GET /api/items", handlers.listItems)
 	application.HandleFunc("POST /api/items", handlers.createItem)
 	application.HandleFunc("POST /api/notify", handlers.requestNotification)
+	application.HandleFunc("GET /api/openapi.yaml", serveOpenAPI)
 
 	instrumented := otelhttp.NewHandler(
 		dependencies.Metrics.Instrument(securityHeaders(application)),
@@ -68,6 +72,11 @@ func New(dependencies Dependencies) http.Handler {
 	return routes
 }
 
+func serveOpenAPI(response http.ResponseWriter, _ *http.Request) {
+	response.Header().Set("Content-Type", "application/yaml")
+	_, _ = response.Write(OpenAPI)
+}
+
 func staticFiles() fs.FS {
 	files, err := fs.Sub(embedded, "static")
 	if err != nil {
@@ -80,6 +89,10 @@ func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		headers := response.Header()
 		headers.Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		headers.Set("Cross-Origin-Embedder-Policy", "require-corp")
+		headers.Set("Cross-Origin-Opener-Policy", "same-origin")
+		headers.Set("Cross-Origin-Resource-Policy", "same-origin")
+		headers.Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()")
 		headers.Set("Referrer-Policy", "no-referrer")
 		headers.Set("X-Content-Type-Options", "nosniff")
 		headers.Set("X-Frame-Options", "DENY")
