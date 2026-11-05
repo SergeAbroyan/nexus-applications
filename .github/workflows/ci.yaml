@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  GITOPS_REPOSITORY: SergeAbroyan/nexus-gitops
+  GITOPS_REPOSITORY: ${{ github.repository_owner }}/nexus-gitops
 
 jobs:
   secrets:
