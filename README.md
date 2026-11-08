@@ -278,9 +278,8 @@ that the worker processed the queued notifications. Run it from the Actions
 tab with an environment's address, users, and duration to load test DEV or
 staging.
 
-Runs on `main` queue instead of cancelling each other. Staging and production
-change only through the approved `Promote release` workflow in `nexus-gitops`,
-which copies an image SHA already tested in the previous environment. Renovate
+Runs on `main` queue instead of cancelling each other. Every push to `main`
+deploys the services it changed to DEV. Renovate
 opens weekly grouped pull requests for Go modules, Maven dependencies, base
 images, the Testcontainers images, the k6 and cosign versions, and GitHub
 Actions. Install the local hooks once with `pre-commit install`.
@@ -297,3 +296,33 @@ Repository settings, once the infrastructure exists:
 
 Without the AWS settings, CI still tests, builds, and scans, but does not
 publish.
+
+### Deploying
+
+Every environment runs images that CI built once from `main`; nothing is
+rebuilt for staging or production. Development is trunk-based: short-lived
+branches merge into `main` through pull requests, and environments are folders
+in `nexus-gitops`, not branches.
+
+`.github/workflows/deploy.yaml` deploys any built version to any environment.
+Run it from the Actions tab on `main` and choose:
+
+- **environment**: `dev`, `staging`, or `production`;
+- **services**: both, or only `api` or `worker`;
+- **version**: a full commit SHA, which is also how you roll back; leave it
+  empty to take the newest build for `dev`, what DEV runs for `staging`, or what
+  staging runs for `production`.
+
+The first job finds each image in ECR and checks with cosign that this
+repository's CI signed it, before anyone is asked to approve. The second job
+runs in the GitHub environment of the same name, so production waits for its
+reviewers, then writes the tags to `environments/<environment>/` in
+`nexus-gitops` as one commit, and Argo CD rolls the change out. CI builds a
+service only for commits that change it, so a SHA must come from a commit that
+built every selected service.
+
+Create the `production` environment under Settings → Environments, add
+yourself under **Required reviewers**, and leave **Prevent self-review** off if
+you deploy alone. The workflow refuses production while that environment has
+no reviewers, because GitHub would otherwise create it on the first run without
+any protection. `dev` and `staging` need no setup.

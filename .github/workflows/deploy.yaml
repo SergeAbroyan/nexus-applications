@@ -1,0 +1,206 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment that receives the images
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+        default: dev
+      services:
+        description: Services to deploy
+        type: choice
+        options:
+          - api worker
+          - api
+          - worker
+        default: api worker
+      version:
+        description: Commit SHA of the images to deploy. Leave empty for the newest build in dev, or for what the previous environment runs in staging and production.
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GITOPS_REPOSITORY: ${{ github.repository_owner }}/nexus-gitops
+
+jobs:
+  verify:
+    name: Verify images for ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    outputs:
+      tags: ${{ steps.resolve.outputs.tags }}
+    steps:
+      - name: Require the main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run Deploy from the main branch. AWS trusts only main, and only images built from main are signed for the clusters."
+          exit 1
+
+      - name: Require an approval rule on production
+        if: inputs.environment == 'production'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          reviewers=0
+          if response="$(curl -fsS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/environments/production")"; then
+            reviewers="$(jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length' <<< "${response}")"
+          fi
+          if [[ "${reviewers}" -lt 1 ]]; then
+            echo "::error::The production environment has no required reviewers, or they could not be read. Add a reviewer under Settings, Environments, production before deploying to production."
+            exit 1
+          fi
+
+      - name: Check out GitOps repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.GITOPS_REPOSITORY }}
+          ref: main
+          path: nexus-gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: environments
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Sign in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.4
+
+      - name: Resolve and verify the images
+        id: resolve
+        env:
+          TARGET: ${{ inputs.environment }}
+          SERVICES: ${{ inputs.services }}
+          VERSION: ${{ inputs.version }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          case "${TARGET}" in
+            dev) source="" ;;
+            staging) source=dev ;;
+            production) source=staging ;;
+          esac
+          version="$(tr -d '[:space:]' <<< "${VERSION}")"
+          identity="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/ci.yaml@refs/heads/main"
+          tags='{}'
+
+          echo "### Images for ${TARGET}" >> "${GITHUB_STEP_SUMMARY}"
+          for service in ${SERVICES}; do
+            repository="nexus/${service}"
+            if [[ -n "${version}" ]]; then
+              tag="${version}"
+              origin="the requested version"
+            elif [[ -n "${source}" ]]; then
+              tag="$(sed -nE 's/^  tag: "?([^"]+)"?$/\1/p' "nexus-gitops/environments/${source}/${service}-values.yaml")"
+              origin="what ${source} runs"
+            else
+              tag="$(aws ecr describe-images --repository-name "${repository}" --filter tagStatus=TAGGED --output json \
+                | jq -r '[.imageDetails[] | select(any(.imageTags[]?; test("^[0-9a-f]{40}$")))] | sort_by(.imagePushedAt) | last | .imageTags[] | select(test("^[0-9a-f]{40}$"))' \
+                | head -n 1)"
+              origin="the newest build"
+            fi
+
+            if [[ ! "${tag}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::${service}: '${tag}' from ${origin} is not a full 40-character commit SHA."
+              exit 1
+            fi
+
+            digest="$(aws ecr describe-images --repository-name "${repository}" --image-ids "imageTag=${tag}" \
+              --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
+            if [[ -z "${digest}" || "${digest}" == "None" ]]; then
+              echo "::error::${service}: no image is tagged ${tag}. CI builds a service only for commits that change it, so choose a commit that built ${service}."
+              exit 1
+            fi
+
+            cosign verify \
+              --certificate-identity "${identity}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "${REGISTRY}/${repository}@${digest}" > /dev/null
+
+            echo "- ${service}: \`${tag}\` from ${origin}, signed by CI, digest \`${digest}\`" >> "${GITHUB_STEP_SUMMARY}"
+            tags="$(jq -c --arg service "${service}" --arg tag "${tag}" '. + {($service): $tag}' <<< "${tags}")"
+          done
+
+          echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
+
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Check out GitOps repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.GITOPS_REPOSITORY }}
+          ref: main
+          path: nexus-gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+
+      - name: Point the environment at the images
+        working-directory: nexus-gitops
+        env:
+          TARGET: ${{ inputs.environment }}
+          TAGS: ${{ needs.verify.outputs.tags }}
+        run: |
+          set -euo pipefail
+          files=()
+          changes=()
+          for service in $(jq -r 'keys[]' <<< "${TAGS}"); do
+            tag="$(jq -r --arg service "${service}" '.[$service]' <<< "${TAGS}")"
+            file="environments/${TARGET}/${service}-values.yaml"
+            sed -i -E "s/^  tag: .*/  tag: \"${tag}\"/" "${file}"
+            grep -Fqx "  tag: \"${tag}\"" "${file}"
+            files+=("${file}")
+            changes+=("${service} ${tag:0:7}")
+          done
+
+          if git diff --quiet -- "${files[@]}"; then
+            echo "${TARGET} already runs these images." >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          message="deploy(${TARGET}): $(IFS=,; echo "${changes[*]}" | sed 's/,/, /g')"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --quiet -m "${message}" -m "Requested by ${GITHUB_ACTOR} in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" -- "${files[@]}"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "${message}" >> "${GITHUB_STEP_SUMMARY}"
+              exit 0
+            fi
+            echo "Push attempt ${attempt} was rejected; rebasing on the latest GitOps commit." >&2
+            git pull --rebase origin main
+          done
+          exit 1

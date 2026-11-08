@@ -13,3 +13,4 @@ supersedes the old one.
 | [0005](0005-contracts-tested-on-both-sides.md) | HTTP and queue contracts are documents that tests enforce |
 | [0006](0006-no-feature-flags.md) | No feature flag service |
 | [0007](0007-release-please-and-sha-tags.md) | Releases are versioned by Release Please, images by commit SHA |
+| [0008](0008-deploy-workflow-in-the-application-repository.md) | Any version deploys to any environment from this repository |
