@@ -288,6 +288,7 @@ jobs:
           push: false
           platforms: linux/amd64
           tags: ${{ steps.image.outputs.name }}
+          build-args: VERSION=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

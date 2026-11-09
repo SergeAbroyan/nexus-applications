@@ -50,6 +50,7 @@ type testServer struct {
 func newTestServer() *testServer {
 	server := &testServer{items: &fakeItems{}, notifications: &fakeNotifications{}}
 	server.handler = New(Dependencies{
+		Version:       "0123456789abcdef",
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Metrics:       telemetry.NewMetrics("test"),
 		Items:         server.items,
@@ -120,6 +121,15 @@ func TestProbes(t *testing.T) {
 	server.databaseErr = errors.New("connection refused")
 	expect(t, server.do(http.MethodGet, "/readyz", ""), http.StatusServiceUnavailable, "database unavailable")
 	expect(t, server.do(http.MethodGet, "/healthz", ""), http.StatusOK, `"ok"`)
+}
+
+func TestVersion(t *testing.T) {
+	server := newTestServer()
+	response := server.do(http.MethodGet, "/api/version", "")
+	expect(t, response, http.StatusOK, `{"version":"0123456789abcdef"}`)
+	if cache := response.Header().Get("Cache-Control"); cache != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", cache)
+	}
 }
 
 func TestItems(t *testing.T) {

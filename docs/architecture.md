@@ -46,6 +46,7 @@ tested without any infrastructure.
 | `GET /` | Web page |
 | `GET /api/items`, `POST /api/items` | List and create items |
 | `POST /api/notify` | Queue a notification for the worker |
+| `GET /api/version` | The commit the running image was built from, shown at the bottom of the web page |
 | `GET /healthz` | Liveness: the process is running |
 | `GET /readyz` | Readiness: PostgreSQL answers |
 | `GET /metrics` | Prometheus metrics |

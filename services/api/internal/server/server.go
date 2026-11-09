@@ -34,6 +34,7 @@ type Check struct {
 }
 
 type Dependencies struct {
+	Version       string
 	Logger        *slog.Logger
 	Metrics       *telemetry.Metrics
 	Items         ItemService
@@ -43,6 +44,7 @@ type Dependencies struct {
 
 func New(dependencies Dependencies) http.Handler {
 	handlers := &handlers{
+		version:       dependencies.Version,
 		logger:        dependencies.Logger,
 		items:         dependencies.Items,
 		notifications: dependencies.Notifications,
@@ -54,6 +56,7 @@ func New(dependencies Dependencies) http.Handler {
 	application.HandleFunc("GET /api/items", handlers.listItems)
 	application.HandleFunc("POST /api/items", handlers.createItem)
 	application.HandleFunc("POST /api/notify", handlers.requestNotification)
+	application.HandleFunc("GET /api/version", handlers.showVersion)
 	application.HandleFunc("GET /api/openapi.yaml", serveOpenAPI)
 
 	instrumented := otelhttp.NewHandler(

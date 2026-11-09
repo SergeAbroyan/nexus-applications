@@ -53,6 +53,7 @@ func TestResponsesMatchTheOpenAPIDocument(t *testing.T) {
 			prepare: func(server *testServer) { server.notifications.err = notifications.ErrInvalidMessage }},
 		{name: "fail to queue", method: http.MethodPost, path: "/api/notify", body: `{"message":"x"}`, status: http.StatusBadGateway,
 			prepare: func(server *testServer) { server.notifications.err = errors.New("queue down") }},
+		{name: "report the version", method: http.MethodGet, path: "/api/version", status: http.StatusOK},
 		{name: "serve this document", method: http.MethodGet, path: "/api/openapi.yaml", status: http.StatusOK},
 	}
 

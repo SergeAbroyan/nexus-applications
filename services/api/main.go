@@ -26,6 +26,8 @@ import (
 
 const serviceName = "nexus-api"
 
+var version = "dev"
+
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
 		if err := healthcheck(); err != nil {
@@ -100,6 +102,7 @@ func run(logger *slog.Logger) error {
 	}()
 
 	handler := server.New(server.Dependencies{
+		Version:       version,
 		Logger:        logger,
 		Metrics:       telemetry.NewMetrics("api"),
 		Items:         items.NewService(store, cache, cfg.Valkey.CacheTTL, logger),

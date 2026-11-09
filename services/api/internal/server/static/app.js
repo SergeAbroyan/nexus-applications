@@ -38,3 +38,20 @@ submitForm(document.querySelector("#send-notification"), "/api/notify");
 
 const loadButton = document.querySelector("#load-items");
 loadButton.addEventListener("click", () => request(loadButton, "/api/items"));
+
+async function showVersion() {
+  const label = document.querySelector("#version");
+  try {
+    const response = await fetch("/api/version");
+    if (response.status === 404) {
+      label.textContent = "Served by an earlier version";
+      return;
+    }
+    const body = await response.json();
+    label.textContent = `Served by version ${body.version.slice(0, 7)}`;
+  } catch {
+    label.textContent = "";
+  }
+}
+
+showVersion();

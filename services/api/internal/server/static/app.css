@@ -61,3 +61,9 @@ pre {
   background: #0d1016;
   white-space: pre-wrap;
 }
+
+.version {
+  margin: 1rem 0 0;
+  color: #8b95a7;
+  font-size: 0.875rem;
+}

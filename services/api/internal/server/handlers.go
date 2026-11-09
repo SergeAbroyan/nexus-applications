@@ -16,6 +16,7 @@ import (
 const maxRequestBytes = 64 << 10
 
 type handlers struct {
+	version       string
 	logger        *slog.Logger
 	items         ItemService
 	notifications NotificationService
@@ -24,6 +25,10 @@ type handlers struct {
 
 func (handlers *handlers) health(response http.ResponseWriter, _ *http.Request) {
 	writeJSON(response, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (handlers *handlers) showVersion(response http.ResponseWriter, _ *http.Request) {
+	writeJSON(response, http.StatusOK, map[string]string{"version": handlers.version})
 }
 
 func (handlers *handlers) ready(response http.ResponseWriter, request *http.Request) {
