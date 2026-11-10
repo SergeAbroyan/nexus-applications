@@ -51,10 +51,8 @@ tab with an environment's address, users, and duration to load test DEV or
 staging.
 
 Runs on `main` queue instead of cancelling each other. Every push to `main`
-deploys the services it changed to DEV. Renovate
-opens weekly grouped pull requests for Go modules, Maven dependencies, base
-images, the Testcontainers images, the k6 and cosign versions, and GitHub
-Actions. Install the local hooks once with `pre-commit install`.
+deploys the services it changed to DEV. Install the local hooks once with
+`pre-commit install`.
 
 Repository settings, once the infrastructure exists:
 
